@@ -321,7 +321,7 @@
             ]);
         }
         
-        // Fonction de chargement de textures (inchangée)
+        // Fonction de chargement de textures (Mise à jour pour DoubleSide)
         function loadTextures(callback) {
             const loader = new THREE.TextureLoader();
             const blockTypes = Object.keys(BLOCK_TEXTURES);
@@ -338,8 +338,8 @@
                         texture.magFilter = THREE.NearestFilter;
                         texture.minFilter = THREE.NearestFilter;
                         
-                        // Créer et stocker le matériel pour ce type de bloc
-                        materialCache[type] = new THREE.MeshLambertMaterial({ map: texture, side: THREE.FrontSide });
+                        // CORRECTION: Utiliser THREE.DoubleSide pour rendre les faces des deux côtés
+                        materialCache[type] = new THREE.MeshLambertMaterial({ map: texture, side: THREE.DoubleSide });
                         
                         loadedCount++;
                         if (loadedCount === totalToLoad) {
@@ -351,7 +351,7 @@
                         console.error(`Erreur de chargement de la texture pour ${type} (${url}). Utilisation du matériel de secours.`, err);
                         
                         // Matériel de secours gris uni
-                        materialCache[type] = new THREE.MeshLambertMaterial({ color: 0xAAAAAA }); 
+                        materialCache[type] = new THREE.MeshLambertMaterial({ color: 0xAAAAAA, side: THREE.DoubleSide }); 
                         
                         loadedCount++;
                         if (loadedCount === totalToLoad) {
@@ -661,13 +661,15 @@
                 // --- TOP FACE (y + 1) ---
                 if (!isBlockSolid(x, y + 1, z)) {
                     const uvs = getFaceUVs('top'); // Utilise l'UV Top
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[5], corners[7], corners[6], uvs));
+                    // Ordre corrigé : 4, 6, 7, 5 (CCW)
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[6], corners[7], corners[5], uvs));
                 }
                 
                 // --- BOTTOM FACE (y - 1) ---
                 if (!isBlockSolid(x, y - 1, z)) {
                     const uvs = getFaceUVs('bottom'); // Utilise l'UV Bottom
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[2], corners[3], corners[1], uvs));
+                    // Ordre corrigé : 0, 1, 3, 2 (CCW)
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[1], corners[3], corners[2], uvs));
                 }
 
                 // --- SIDE FACES ---
