@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu Voxel 3D - Texture Locale</title>
+    <title>Jeu Voxel 3D - Textures Multiples</title>
     <!-- Chargement de la bibliothèque Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Chargement de BufferGeometryUtils pour fusionner les géométries -->
@@ -182,7 +182,8 @@
             <p>Z : Reculer | S : Avancer | Q : Gauche | D : Droite | Espace : Saut</p>
             <p>Clic Gauche : Minage (Tenez!) | Clic Droit : Placer</p>
             <p>1-4 : Sélection des Blocs | T : Ouvrir/Fermer l'interface de Crafting</p>
-            <p class="text-green-400 mt-2">Texture: Tous les blocs utilisent le fichier local 'grass.png' comme atlas 2x2.</p>
+            <p class="text-green-400 mt-2">Texture: Chaque bloc utilise désormais son propre fichier de texture.</p>
+            <p class="text-yellow-400 text-sm">Note: Pour voir la différence, vous devez créer et charger `dirt.png`, `rock.png` et `wood.png`!</p>
         </div>
     </div>
     <div id="fpsIndicator">FPS: --</div>
@@ -221,7 +222,7 @@
         // --- STRUCTURE DE DONNÉES DU MONDE ---
         const CHUNK_SIZE = 16; 
         let world = {};        
-        // chunkMeshes stocke maintenant un THREE.Group contenant des Meshs par type de bloc (matériau)
+        // chunkMeshes stocke un THREE.Group contenant des Meshs par type de bloc (matériau)
         const chunkMeshes = {};
         
         // Raycasting pour l'interaction
@@ -263,55 +264,71 @@
 
 
         // =========================================================================
-        // --- LOGIQUE DE TEXTURE AVEC CHEMIN LOCAL ---
+        // --- LOGIQUE DE TEXTURE AVEC FICHIERS MULTIPLES ---
         // =========================================================================
         
-        // 1. Définition des chemins de texture. Tous les blocs utilisent 'grass.png'.
+        // 1. Définition des chemins de texture pour chaque bloc
+        // Mettez à jour ces chemins pour pointer vers vos images PNG locales :
         const BLOCK_TEXTURES = {
-            // Tous les blocs pointeront vers le fichier local 'grass.png'
+            // Note: Si vous n'avez pas ces fichiers, ils généreront une erreur.
+            // J'utilise 'grass.png' comme fallback pour l'exemple.
             'grass': 'grass.png', 
-            'dirt': 'grass.png',   
-            'rock': 'grass.png',   
-            'wood': 'grass.png',   
+            'dirt': 'dirt.png',   
+            'rock': 'rock.png',   
+            'wood': 'wood.png',   
         };
 
-        // 2. Cache de matériaux: un matériau (et donc une texture) par type de bloc
+        // 2. Cache de matériaux: un matériau distinct pour chaque type de bloc
         let materialCache = {}; 
         
-        // 3. UV Mapping pour le format 2x2 interne du fichier 'grass.png'
-        // Les coordonnées UV sont ordonnées pour correspondre aux 6 vertices.
-        const SINGLE_BLOCK_UV_MAP = {
-            // Haut-Gauche (0, 0.5) à (0.5, 1.0) -> Coin supérieur gauche de l'atlas
-            top: [
-                0.0, 1.0,  // v0 (Coin Haut-Gauche de la face)
-                0.5, 1.0,  // v1 (Coin Haut-Droit de la face)
-                0.5, 0.5,  // v2 (Coin Bas-Droit de la face)
+        // 3. Suppression des UV Mappings d'Atlas (non nécessaires ici)
+        // Les UV par défaut (0.0 à 1.0) seront utilisés.
+
+        // Fonction Utile pour gérer les faces des blocs (utile pour le bloc d'herbe)
+        // Note : Dans ce modèle simple (un fichier par bloc), nous utilisons simplement le matériel
+        // unique pour toutes les faces, sauf si on gère spécifiquement Herbe/Terre/Côté
+        
+        // --- NOUVELLE: LOGIQUE DE CHARGEMENT POUR TEXTURES MULTIPLES ---
+
+        function loadTextures(callback) {
+            const loader = new THREE.TextureLoader();
+            const blockTypes = Object.keys(BLOCK_TEXTURES);
+            let loadedCount = 0;
+            const totalToLoad = blockTypes.length;
+
+            blockTypes.forEach(type => {
+                const url = BLOCK_TEXTURES[type];
                 
-                0.5, 0.5,  // v2 (Répété)
-                0.0, 0.5,  // v3 (Coin Bas-Gauche de la face)
-                0.0, 1.0   // v0 (Répété)
-            ],
-            // Bas-Gauche (0, 0.0) à (0.5, 0.5) -> Coin inférieur gauche de l'atlas
-            bottom: [
-                0.0, 0.5,  // v0
-                0.5, 0.5,  // v1
-                0.5, 0.0,  // v2
-                
-                0.5, 0.0,  // v2 (Répété)
-                0.0, 0.0,  // v3
-                0.0, 0.5   // v0 (Répété)
-            ],
-            // Haut-Droit (0.5, 0.5) à (1.0, 1.0) -> Coin supérieur droit de l'atlas (Utilisé pour les côtés)
-            side: [
-                0.5, 0.5,  // v0
-                1.0, 0.5,  // v1
-                1.0, 1.0,  // v2
-                
-                1.0, 1.0,  // v2 (Répété)
-                0.5, 1.0,  // v3
-                0.5, 0.5   // v0 (Répété)
-            ]
-        };
+                loader.load(
+                    url, 
+                    (texture) => {
+                        // Configuration standard pour les textures de blocs (NearestFilter)
+                        texture.magFilter = THREE.NearestFilter;
+                        texture.minFilter = THREE.NearestFilter;
+                        
+                        // Créer et stocker le matériel pour ce type de bloc
+                        materialCache[type] = new THREE.MeshLambertMaterial({ map: texture, side: THREE.FrontSide });
+                        
+                        loadedCount++;
+                        if (loadedCount === totalToLoad) {
+                            callback(); // Toutes les textures sont chargées
+                        }
+                    },
+                    undefined, 
+                    (err) => {
+                        console.error(`Erreur de chargement de la texture pour ${type} (${url}). Utilisation du matériel de secours.`, err);
+                        
+                        // Matériel de secours rouge ou gris uni
+                        materialCache[type] = new THREE.MeshLambertMaterial({ color: 0xAAAAAA }); 
+                        
+                        loadedCount++;
+                        if (loadedCount === totalToLoad) {
+                            callback();
+                        }
+                    }
+                );
+            });
+        }
         
         // =========================================================================
 
@@ -435,57 +452,6 @@
             return world[chunkKey].hasOwnProperty(blockKey);
         }
 
-        // --- NOUVELLE FONCTION loadTextures pour charger plusieurs textures ---
-
-        function loadTextures(callback) {
-            const loader = new THREE.TextureLoader();
-            const blockTypes = Object.keys(BLOCK_TEXTURES);
-            let loadedCount = 0;
-            
-            // Stocke les chemins uniques pour éviter de charger le même fichier plusieurs fois
-            const uniqueUrls = new Set(Object.values(BLOCK_TEXTURES)); 
-            
-            // On itère sur les URLs uniques (ici, seulement 'grass.png')
-            uniqueUrls.forEach(url => {
-                loader.load(
-                    url, 
-                    (texture) => {
-                        texture.magFilter = THREE.NearestFilter;
-                        texture.minFilter = THREE.NearestFilter;
-                        
-                        // Créer et stocker le matériel pour CHAQUE type de bloc qui utilise cette texture
-                        for (const type in BLOCK_TEXTURES) {
-                            if (BLOCK_TEXTURES[type] === url) {
-                                // Important: Chaque type de bloc doit avoir son PROPRE matériel
-                                materialCache[type] = new THREE.MeshLambertMaterial({ map: texture, side: THREE.FrontSide });
-                                loadedCount++; 
-                            }
-                        }
-                        
-                        // Vérifier si tous les types de blocs ont un matériel créé
-                        if (loadedCount === blockTypes.length) {
-                            callback(); // Toutes les textures sont chargées
-                        }
-                    },
-                    undefined, 
-                    (err) => {
-                        console.error(`Erreur de chargement de la texture pour ${url}:`, err);
-                        // Utiliser un matériel de secours uni pour tous les blocs qui utilisaient cette URL
-                        for (const type in BLOCK_TEXTURES) {
-                            if (BLOCK_TEXTURES[type] === url) {
-                                materialCache[type] = new THREE.MeshLambertMaterial({ color: 0xFF0000 }); // Rouge pour indiquer l'erreur
-                                loadedCount++;
-                            }
-                        }
-                        
-                        if (loadedCount === blockTypes.length) {
-                            callback();
-                        }
-                    }
-                );
-            });
-        }
-
         function init() {
             // Appel de la nouvelle fonction de chargement de textures
             loadTextures(() => {
@@ -582,14 +548,14 @@
         }
 
         // =========================================================================
-        // --- FONCTIONS DE GÉOMÉTRIE AVEC UV MAPPING LOCAL ---
+        // --- FONCTIONS DE GÉOMÉTRIE SIMPLIFIÉES ---
         // =========================================================================
 
         /**
-         * Crée une BufferGeometry pour une seule face d'un bloc en utilisant le UV mapping local.
-         * Le `faceType` est 'top', 'bottom' ou 'side'.
+         * Crée une BufferGeometry pour une seule face d'un bloc.
+         * Les UVs par défaut sont utilisés, car chaque matériau gère une texture entière.
          */
-        function createFaceGeometry(v0, v1, v2, v3, faceType) {
+        function createFaceGeometry(v0, v1, v2, v3) {
             const geo = new THREE.BufferGeometry();
             
             // Vertices (crée deux triangles)
@@ -602,8 +568,11 @@
             const normal = new THREE.Vector3().subVectors(v1, v0).cross(new THREE.Vector3().subVectors(v2, v0)).normalize();
             const normals = new Float32Array(Array(6).fill([normal.x, normal.y, normal.z]).flat());
 
-            // UVs: utilise le mapping 2x2 prédéfini
-            const uvs = new Float32Array(SINGLE_BLOCK_UV_MAP[faceType]);
+            // UVs par défaut (couvrent toute la texture)
+            const uvs = new Float32Array([
+                0.0, 1.0, 1.0, 1.0, 1.0, 0.0,  // T1
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0   // T2
+            ]);
 
             geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
             geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
@@ -661,28 +630,29 @@
                     new THREE.Vector3(px + 0.5, py + 1, pz - 0.5)  // 7 (coin haut, arrière-droite)
                 ];
 
-                // --- TOP FACE (y + 1) -> utilise la section 'top' de la texture 'grass.png' ---
+                // --- TOP FACE (y + 1) ---
                 if (!isBlockSolid(x, y + 1, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[5], corners[7], corners[6], 'top'));
+                    // Utilisation de createFaceGeometry standard pour le bloc 'type'
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[5], corners[7], corners[6]));
                 }
                 
-                // --- BOTTOM FACE (y - 1) -> utilise la section 'bottom' de la texture 'grass.png' ---
+                // --- BOTTOM FACE (y - 1) ---
                 if (!isBlockSolid(x, y - 1, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[2], corners[3], corners[1], 'bottom'));
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[2], corners[3], corners[1]));
                 }
 
-                // --- SIDE FACES -> utilisent la section 'side' de la texture 'grass.png' ---
+                // --- SIDE FACES ---
                 if (!isBlockSolid(x, y, z + 1)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[1], corners[5], corners[4], 'side')); // FRONT
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[1], corners[5], corners[4])); // FRONT
                 }
                 if (!isBlockSolid(x, y, z - 1)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[3], corners[2], corners[6], corners[7], 'side')); // BACK
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[3], corners[2], corners[6], corners[7])); // BACK
                 }
                 if (!isBlockSolid(x + 1, y, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[1], corners[3], corners[7], corners[5], 'side')); // RIGHT
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[1], corners[3], corners[7], corners[5])); // RIGHT
                 }
                 if (!isBlockSolid(x - 1, y, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[2], corners[0], corners[4], corners[6], 'side')); // LEFT
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[2], corners[0], corners[4], corners[6])); // LEFT
                 }
             }
             
@@ -698,6 +668,7 @@
                     const material = materialCache[blockType];
                     
                     if (material) {
+                        // Créer un Mesh par type de bloc (car chacun a son propre matériel/texture)
                         const mesh = new THREE.Mesh(mergedGeometry, material);
                         chunkGroup.add(mesh);
                     }
