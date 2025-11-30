@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu Voxel 3D - Textures Multiples</title>
+    <title>Jeu Voxel 3D - Atlas de Textures Universel</title>
     <!-- Chargement de la bibliothèque Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Chargement de BufferGeometryUtils pour fusionner les géométries -->
@@ -182,8 +182,8 @@
             <p>Z : Reculer | S : Avancer | Q : Gauche | D : Droite | Espace : Saut</p>
             <p>Clic Gauche : Minage (Tenez!) | Clic Droit : Placer</p>
             <p>1-4 : Sélection des Blocs | T : Ouvrir/Fermer l'interface de Crafting</p>
-            <p class="text-green-400 mt-2">Texture: Chaque bloc utilise désormais son propre fichier de texture.</p>
-            <p class="text-yellow-400 text-sm">Note: Pour voir la différence, vous devez créer et charger `dirt.png`, `rock.png` et `wood.png`!</p>
+            <p class="text-green-400 mt-2">Texture: TOUS les blocs utilisent l'atlas 2x2.</p>
+            <p class="text-yellow-400 text-sm">Haut: Haut-Gauche | Bas: Bas-Gauche | Côtés: Haut-Droit</p>
         </div>
     </div>
     <div id="fpsIndicator">FPS: --</div>
@@ -264,14 +264,11 @@
 
 
         // =========================================================================
-        // --- LOGIQUE DE TEXTURE AVEC FICHIERS MULTIPLES ---
+        // --- LOGIQUE DE TEXTURE AVEC TEXTURE ATLAS PAR BLOC ---
         // =========================================================================
         
-        // 1. Définition des chemins de texture pour chaque bloc
-        // Mettez à jour ces chemins pour pointer vers vos images PNG locales :
+        // 1. Définition des chemins de texture 
         const BLOCK_TEXTURES = {
-            // Note: Si vous n'avez pas ces fichiers, ils généreront une erreur.
-            // J'utilise 'grass.png' comme fallback pour l'exemple.
             'grass': 'grass.png', 
             'dirt': 'dirt.png',   
             'rock': 'rock.png',   
@@ -281,15 +278,50 @@
         // 2. Cache de matériaux: un matériau distinct pour chaque type de bloc
         let materialCache = {}; 
         
-        // 3. Suppression des UV Mappings d'Atlas (non nécessaires ici)
-        // Les UV par défaut (0.0 à 1.0) seront utilisés.
+        /**
+         * Calcule les coordonnées UV pour une face donnée en utilisant l'atlas 2x2 universel.
+         * * Layout de l'atlas 2x2 (U horizontal, V vertical):
+         * - TOP (Dessus) : Haut-Gauche (U [0.0, 0.5], V [0.5, 1.0])
+         * - SIDE (Côtés) : Haut-Droit (U [0.5, 1.0], V [0.5, 1.0])
+         * - BOTTOM (Dessous) : Bas-Gauche (U [0.0, 0.5], V [0.0, 0.5])
+         */
+        function getFaceUVs(faceType) {
+            let uStart = 0.0;
+            let uEnd = 1.0;
+            let vStart = 0.0;
+            let vEnd = 1.0;
 
-        // Fonction Utile pour gérer les faces des blocs (utile pour le bloc d'herbe)
-        // Note : Dans ce modèle simple (un fichier par bloc), nous utilisons simplement le matériel
-        // unique pour toutes les faces, sauf si on gère spécifiquement Herbe/Terre/Côté
+            if (faceType === 'top') {
+                // Haut-Gauche : U [0.0, 0.5], V [0.5, 1.0]
+                uStart = 0.0; uEnd = 0.5;
+                vStart = 0.5; vEnd = 1.0;
+            } else if (faceType === 'bottom') {
+                // Bas-Gauche : U [0.0, 0.5], V [0.0, 0.5]
+                uStart = 0.0; uEnd = 0.5;
+                vStart = 0.0; vEnd = 0.5;
+            } else if (faceType === 'side') {
+                // Haut-Droit : U [0.5, 1.0], V [0.5, 1.0]
+                uStart = 0.5; uEnd = 1.0;
+                vStart = 0.5; vEnd = 1.0;
+            } else {
+                // Fallback: Texture entière (pour toute face non reconnue)
+                return new Float32Array([
+                    0.0, 1.0, 1.0, 1.0, 1.0, 0.0,  
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0   
+                ]);
+            }
+
+            // Ordre des UVs (v0, v1, v2) (v2, v3, v0)
+            // v0 (Bas-Gauche de la face), v1 (Bas-Droit), v2 (Haut-Droit), v3 (Haut-Gauche)
+            return new Float32Array([
+                // T1: (v0, v1, v2) -> (uStart, vEnd), (uEnd, vEnd), (uEnd, vStart)
+                uStart, vEnd, uEnd, vEnd, uEnd, vStart, 
+                // T2: (v2, v3, v0) -> (uEnd, vStart), (uStart, vStart), (uStart, vEnd)
+                uEnd, vStart, uStart, vStart, uStart, vEnd  
+            ]);
+        }
         
-        // --- NOUVELLE: LOGIQUE DE CHARGEMENT POUR TEXTURES MULTIPLES ---
-
+        // Fonction de chargement de textures (inchangée)
         function loadTextures(callback) {
             const loader = new THREE.TextureLoader();
             const blockTypes = Object.keys(BLOCK_TEXTURES);
@@ -318,7 +350,7 @@
                     (err) => {
                         console.error(`Erreur de chargement de la texture pour ${type} (${url}). Utilisation du matériel de secours.`, err);
                         
-                        // Matériel de secours rouge ou gris uni
+                        // Matériel de secours gris uni
                         materialCache[type] = new THREE.MeshLambertMaterial({ color: 0xAAAAAA }); 
                         
                         loadedCount++;
@@ -388,6 +420,17 @@
             updateInventoryUI(); 
         }
 
+        function isBlockSolid(x, y, z) {
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = getBlockKey(x, y, z);
+            
+            if (!world[chunkKey]) return false;
+
+            return world[chunkKey].hasOwnProperty(blockKey);
+        }
+
+        // --- Fonctions de Minage et de Génération (inchangées) ---
+
         function getMiningTime(blockType) {
             const baseHealth = BLOCK_HEALTH[blockType] || 100;
             let miningSpeed = MINING_SPEEDS.hand; 
@@ -443,15 +486,6 @@
             return Math.floor((h1 + h2 + h3) / 2.5);
         }
         
-        function isBlockSolid(x, y, z) {
-            const chunkKey = getChunkKey(x, z);
-            const blockKey = getBlockKey(x, y, z);
-            
-            if (!world[chunkKey]) return false;
-
-            return world[chunkKey].hasOwnProperty(blockKey);
-        }
-
         function init() {
             // Appel de la nouvelle fonction de chargement de textures
             loadTextures(() => {
@@ -548,14 +582,14 @@
         }
 
         // =========================================================================
-        // --- FONCTIONS DE GÉOMÉTRIE SIMPLIFIÉES ---
+        // --- FONCTIONS DE GÉOMÉTRIE ---
         // =========================================================================
 
         /**
          * Crée une BufferGeometry pour une seule face d'un bloc.
-         * Les UVs par défaut sont utilisés, car chaque matériau gère une texture entière.
+         * Accepte le tableau d'UVs précalculé pour le mapping d'atlas.
          */
-        function createFaceGeometry(v0, v1, v2, v3) {
+        function createFaceGeometry(v0, v1, v2, v3, uvs) {
             const geo = new THREE.BufferGeometry();
             
             // Vertices (crée deux triangles)
@@ -568,15 +602,9 @@
             const normal = new THREE.Vector3().subVectors(v1, v0).cross(new THREE.Vector3().subVectors(v2, v0)).normalize();
             const normals = new Float32Array(Array(6).fill([normal.x, normal.y, normal.z]).flat());
 
-            // UVs par défaut (couvrent toute la texture)
-            const uvs = new Float32Array([
-                0.0, 1.0, 1.0, 1.0, 1.0, 0.0,  // T1
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0   // T2
-            ]);
-
             geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
             geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-            geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+            geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2)); // Utilisation des UVs passés en argument
 
             geo.computeBoundingBox();
             
@@ -596,7 +624,7 @@
                 scene.remove(chunkMeshes[chunkKey]);
                 // Libérer les ressources
                 chunkMeshes[chunkKey].children.forEach(mesh => {
-                    mesh.geometry.dispose();
+                    if (mesh.geometry) mesh.geometry.dispose();
                 });
                 delete chunkMeshes[chunkKey];
             }
@@ -632,27 +660,30 @@
 
                 // --- TOP FACE (y + 1) ---
                 if (!isBlockSolid(x, y + 1, z)) {
-                    // Utilisation de createFaceGeometry standard pour le bloc 'type'
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[5], corners[7], corners[6]));
+                    const uvs = getFaceUVs('top'); // Utilise l'UV Top
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[5], corners[7], corners[6], uvs));
                 }
                 
                 // --- BOTTOM FACE (y - 1) ---
                 if (!isBlockSolid(x, y - 1, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[2], corners[3], corners[1]));
+                    const uvs = getFaceUVs('bottom'); // Utilise l'UV Bottom
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[2], corners[3], corners[1], uvs));
                 }
 
                 // --- SIDE FACES ---
+                const sideUvs = getFaceUVs('side'); // Utilise l'UV Side
+                
                 if (!isBlockSolid(x, y, z + 1)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[1], corners[5], corners[4])); // FRONT
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[1], corners[5], corners[4], sideUvs)); // FRONT
                 }
                 if (!isBlockSolid(x, y, z - 1)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[3], corners[2], corners[6], corners[7])); // BACK
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[3], corners[2], corners[6], corners[7], sideUvs)); // BACK
                 }
                 if (!isBlockSolid(x + 1, y, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[1], corners[3], corners[7], corners[5])); // RIGHT
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[1], corners[3], corners[7], corners[5], sideUvs)); // RIGHT
                 }
                 if (!isBlockSolid(x - 1, y, z)) {
-                    geometriesByBlockType[type].push(createFaceGeometry(corners[2], corners[0], corners[4], corners[6])); // LEFT
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[2], corners[0], corners[4], corners[6], sideUvs)); // LEFT
                 }
             }
             
