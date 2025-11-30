@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jeu Voxel 3D - Texture Locale</title>
+    <!-- Chargement de la bibliothèque Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Chargement de BufferGeometryUtils pour fusionner les géométries -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+    <style>
+        /* Styles pour que le jeu prenne toute la page */
+        body { margin: 0; overflow: hidden; background-color: #70c5ff; }
+        canvas { display: block; }
+        
+        #uiContainer {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            font-family: sans-serif;
+        }
+        #startButton {
+            padding: 15px 30px;
+            font-size: 20px;
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+            background-color: #4CAF50;
+            color: white;
+            box-shadow: 0 4px #2e7d32;
+            transition: background-color 0.1s;
+        }
+        #startButton:hover { background-color: #66bb6a; }
+        #startButton:active {
+            background-color: #2e7d32;
+            box-shadow: 0 2px #1b5e20;
+            transform: translateY(2px);
+        }
+        #instructions {
+            margin-top: 15px;
+            color: white;
+            font-family: sans-serif;
+            line-height: 1.5;
+        }
+        #fpsIndicator {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            z-index: 100;
+        }
+
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 8px;
+            height: 8px;
+            margin-top: -4px;
+            margin-left: -4px;
+            border: 2px solid white;
+            border-radius: 50%;
+            z-index: 99;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+            pointer-events: none; 
+        }
+        
+        #miningProgress {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) translateY(-30px);
+            width: 50px;
+            height: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 2px;
+            overflow: hidden;
+            z-index: 99;
+            display: none;
+        }
+        #miningBar {
+            height: 100%;
+            width: 0%;
+            background-color: red;
+            transition: width 0.1s linear;
+        }
+
+        #inventory {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 101;
+            display: flex;
+            gap: 10px;
+        }
+        .slot {
+            width: 60px;
+            height: 60px;
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 3px solid #ccc;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 10px;
+            cursor: pointer;
+            transition: border-color 0.1s;
+            line-height: 1.2;
+            text-align: center;
+            position: relative;
+        }
+        .slot.selected {
+            border-color: gold;
+            transform: scale(1.1);
+        }
+        .slot-name { font-weight: bold; }
+        .slot-count { font-size: 14px; margin-top: 2px; }
+
+        #toolSlot {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 3px solid #63a4ff;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 10px;
+            line-height: 1.2;
+            text-align: center;
+            z-index: 101;
+        }
+        #craftingContainer {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 102;
+        }
+        .crafting-panel {
+            background-color: #2d3748;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            width: 90%;
+            max-width: 500px;
+            color: white;
+        }
+        .craft-button {
+            padding: 8px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="uiContainer">
+        <button id="startButton">Démarrer le Jeu (Cliquez pour verrouiller la souris)</button>
+        <div id="instructions">
+            <p>Z : Reculer | S : Avancer | Q : Gauche | D : Droite | Espace : Saut</p>
+            <p>Clic Gauche : Minage (Tenez!) | Clic Droit : Placer</p>
+            <p>1-4 : Sélection des Blocs | T : Ouvrir/Fermer l'interface de Crafting</p>
+            <p class="text-green-400 mt-2">Texture: Tous les blocs utilisent le fichier local 'grass.png' comme atlas 2x2.</p>
+        </div>
+    </div>
+    <div id="fpsIndicator">FPS: --</div>
+    <div id="crosshair"></div>
+    <div id="miningProgress"><div id="miningBar"></div></div>
+    
+    <!-- Interface d'inventaire rapide -->
+    <div id="inventory">
+        <div class="slot selected" data-item-id="grass">Herbe (1)</div>
+        <div class="slot" data-item-id="dirt">Terre (2)</div>
+        <div class="slot" data-item-id="rock">Roche (3)</div>
+        <div class="slot" data-item-id="wood">Bois (4)</div>
+    </div>
+    
+    <!-- Slot d'Outil Équipé -->
+    <div id="toolSlot">
+        <span class="slot-name">Outil:</span>
+        <span id="equippedToolName">Main</span>
+    </div>
+
+    <!-- Interface de Crafting -->
+    <div id="craftingContainer">
+        <div class="crafting-panel">
+            <h2 class="text-2xl font-bold mb-4 text-yellow-400">Atelier de Crafting</h2>
+            <div id="recipesList" class="space-y-3">
+                <!-- Les recettes seront injectées ici par JS -->
+            </div>
+            <button onclick="toggleCraftingUI()" class="mt-6 px-4 py-2 bg-red-600 rounded hover:bg-red-700 transition">Fermer (T)</button>
+        </div>
+    </div>
+
+    <script>
+        // Variables globales pour le moteur 3D
+        let scene, camera, renderer, playerGroup; 
+        
+        // --- STRUCTURE DE DONNÉES DU MONDE ---
+        const CHUNK_SIZE = 16; 
+        let world = {};        
+        // chunkMeshes stocke maintenant un THREE.Group contenant des Meshs par type de bloc (matériau)
+        const chunkMeshes = {};
+        
+        // Raycasting pour l'interaction
+        const raycaster = new THREE.Raycaster();
+        const pointer = new THREE.Vector2();
+        
+        // --- VARIABLES DE JEU ET DE SURVIE (inchangées) ---
+        const inventory = {
+            'grass': { count: 999, name: 'Herbe', type: 'block' },
+            'dirt': { count: 999, name: 'Terre', type: 'block' },
+            'rock': { count: 999, name: 'Roche', type: 'block' },
+            'wood': { count: 999, name: 'Bois', type: 'block' }, 
+            'rock_pickaxe': { count: 0, name: 'Pioche en Roche', type: 'tool', durability: 50 }, 
+        };
+        let selectedItemId = 'grass'; 
+        let equippedToolId = null; 
+        let isMining = false;
+        let miningStartTime = 0;
+        let targetedBlock = null; 
+        
+        const BLOCK_HEALTH = { 'grass': 100, 'dirt': 100, 'rock': 400, 'wood': 200 };
+        const MINING_SPEEDS = { 'hand': 1, 'pickaxe': 4, 'axe': 3 };
+        const craftingRecipes = {
+            'rock_pickaxe': { name: 'Pioche en Roche', required: { 'rock': 3, 'wood': 2 }, category: 'Outils', toolType: 'pickaxe' },
+        };
+        
+        const PLAYER_HEIGHT = 2.0; 
+        const PLAYER_SPEED = 0.08; 
+        const MAX_REACH_DISTANCE = 5; 
+        let velocityY = 0;
+        const GRAVITY = -0.035; 
+        const JUMP_POWER = 0.45; 
+        let onGround = false; 
+        const keys = { z: false, q: false, s: false, d: false, ' ': false };
+        let pointerLocked = false;
+        let lastTime = 0;
+        let frameCount = 0;
+        let fps = 0;
+
+
+        // =========================================================================
+        // --- LOGIQUE DE TEXTURE AVEC CHEMIN LOCAL ---
+        // =========================================================================
+        
+        // 1. Définition des chemins de texture. Tous les blocs utilisent 'grass.png'.
+        const BLOCK_TEXTURES = {
+            // Tous les blocs pointeront vers le fichier local 'grass.png'
+            'grass': 'grass.png', 
+            'dirt': 'grass.png',   
+            'rock': 'grass.png',   
+            'wood': 'grass.png',   
+        };
+
+        // 2. Cache de matériaux: un matériau (et donc une texture) par type de bloc
+        let materialCache = {}; 
+        
+        // 3. UV Mapping pour le format 2x2 interne du fichier 'grass.png'
+        // Les coordonnées UV sont ordonnées pour correspondre aux 6 vertices.
+        const SINGLE_BLOCK_UV_MAP = {
+            // Haut-Gauche (0, 0.5) à (0.5, 1.0) -> Coin supérieur gauche de l'atlas
+            top: [
+                0.0, 1.0,  // v0 (Coin Haut-Gauche de la face)
+                0.5, 1.0,  // v1 (Coin Haut-Droit de la face)
+                0.5, 0.5,  // v2 (Coin Bas-Droit de la face)
+                
+                0.5, 0.5,  // v2 (Répété)
+                0.0, 0.5,  // v3 (Coin Bas-Gauche de la face)
+                0.0, 1.0   // v0 (Répété)
+            ],
+            // Bas-Gauche (0, 0.0) à (0.5, 0.5) -> Coin inférieur gauche de l'atlas
+            bottom: [
+                0.0, 0.5,  // v0
+                0.5, 0.5,  // v1
+                0.5, 0.0,  // v2
+                
+                0.5, 0.0,  // v2 (Répété)
+                0.0, 0.0,  // v3
+                0.0, 0.5   // v0 (Répété)
+            ],
+            // Haut-Droit (0.5, 0.5) à (1.0, 1.0) -> Coin supérieur droit de l'atlas (Utilisé pour les côtés)
+            side: [
+                0.5, 0.5,  // v0
+                1.0, 0.5,  // v1
+                1.0, 1.0,  // v2
+                
+                1.0, 1.0,  // v2 (Répété)
+                0.5, 1.0,  // v3
+                0.5, 0.5   // v0 (Répété)
+            ]
+        };
+        
+        // =========================================================================
+
+
+        // --- Fonctions Utilitaires et de Jeu (inchangées) ---
+
+        function getChunkKey(x, z) {
+            const chunkX = Math.floor(x / CHUNK_SIZE);
+            const chunkZ = Math.floor(z / CHUNK_SIZE);
+            return `${chunkX},${chunkZ}`;
+        }
+
+        function getBlockKey(x, y, z) {
+            return `${x},${y},${z}`;
+        }
+        
+        function getChunkData(chunkKey) {
+            if (!world[chunkKey]) {
+                world[chunkKey] = {};
+            }
+            return world[chunkKey];
+        }
+
+        function updateWorld(x, y, z, newType = null) {
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = getBlockKey(x, y, z);
+            const chunkData = getChunkData(chunkKey);
+            
+            if (newType) {
+                chunkData[blockKey] = { x, y, z, type: newType };
+            } else {
+                delete chunkData[blockKey];
+            }
+
+            updateChunkMesh(chunkKey);
+        }
+
+        function breakBlock(block) {
+            if (!block) return;
+            const { x, y, z, type } = block;
+            
+            if (inventory[type]) {
+                inventory[type].count += 1;
+                updateInventoryUI(); 
+            }
+            updateWorld(x, y, z, null);
+        }
+
+        function placeBlock(x, y, z) {
+            const itemToPlace = selectedItemId;
+            
+            if (inventory[itemToPlace].type === 'tool' || inventory[itemToPlace].count <= 0) return;
+            if (isBlockSolid(x, y, z)) return;
+            
+            inventory[itemToPlace].count -= 1;
+            updateWorld(x, y, z, itemToPlace);
+            updateInventoryUI(); 
+        }
+
+        function getMiningTime(blockType) {
+            const baseHealth = BLOCK_HEALTH[blockType] || 100;
+            let miningSpeed = MINING_SPEEDS.hand; 
+            
+            if (equippedToolId) {
+                const toolRecipe = craftingRecipes[equippedToolId];
+                if (toolRecipe && toolRecipe.toolType) {
+                    miningSpeed = MINING_SPEEDS[toolRecipe.toolType] || MINING_SPEEDS.hand;
+                }
+            }
+            return (baseHealth / miningSpeed) * 10; 
+        }
+
+        function updateMiningProgress() {
+            if (!isMining || !targetedBlock) {
+                document.getElementById('miningProgress').style.display = 'none';
+                return;
+            }
+
+            const elapsed = Date.now() - miningStartTime;
+            const currentBlockData = getBlockDataFromCoords(targetedBlock.x, targetedBlock.y, targetedBlock.z);
+            
+            if (!currentBlockData) {
+                isMining = false;
+                targetedBlock = null;
+                document.getElementById('miningProgress').style.display = 'none';
+                return;
+            }
+
+            const requiredTime = getMiningTime(targetedBlock.type);
+            const progress = Math.min(1, elapsed / requiredTime); 
+
+            const progressBar = document.getElementById('miningBar');
+            progressBar.style.width = `${progress * 100}%`;
+            document.getElementById('miningProgress').style.display = 'block';
+
+            if (progress >= 1) {
+                isMining = false;
+                breakBlock(targetedBlock); 
+                targetedBlock = null;
+                document.getElementById('miningProgress').style.display = 'none';
+            }
+        }
+
+        function getTerrainHeight(x, z) {
+            const scale = 0.1; 
+            const amplitude = 5; 
+
+            const h1 = Math.sin(x * scale) * amplitude * 0.7;
+            const h2 = Math.cos(z * scale * 0.9) * amplitude * 0.8;
+            const h3 = Math.sin(x * scale * 0.3 + z * scale * 0.2) * amplitude * 0.5;
+
+            return Math.floor((h1 + h2 + h3) / 2.5);
+        }
+        
+        function isBlockSolid(x, y, z) {
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = getBlockKey(x, y, z);
+            
+            if (!world[chunkKey]) return false;
+
+            return world[chunkKey].hasOwnProperty(blockKey);
+        }
+
+        // --- NOUVELLE FONCTION loadTextures pour charger plusieurs textures ---
+
+        function loadTextures(callback) {
+            const loader = new THREE.TextureLoader();
+            const blockTypes = Object.keys(BLOCK_TEXTURES);
+            let loadedCount = 0;
+            
+            // Stocke les chemins uniques pour éviter de charger le même fichier plusieurs fois
+            const uniqueUrls = new Set(Object.values(BLOCK_TEXTURES)); 
+            
+            // On itère sur les URLs uniques (ici, seulement 'grass.png')
+            uniqueUrls.forEach(url => {
+                loader.load(
+                    url, 
+                    (texture) => {
+                        texture.magFilter = THREE.NearestFilter;
+                        texture.minFilter = THREE.NearestFilter;
+                        
+                        // Créer et stocker le matériel pour CHAQUE type de bloc qui utilise cette texture
+                        for (const type in BLOCK_TEXTURES) {
+                            if (BLOCK_TEXTURES[type] === url) {
+                                // Important: Chaque type de bloc doit avoir son PROPRE matériel
+                                materialCache[type] = new THREE.MeshLambertMaterial({ map: texture, side: THREE.FrontSide });
+                                loadedCount++; 
+                            }
+                        }
+                        
+                        // Vérifier si tous les types de blocs ont un matériel créé
+                        if (loadedCount === blockTypes.length) {
+                            callback(); // Toutes les textures sont chargées
+                        }
+                    },
+                    undefined, 
+                    (err) => {
+                        console.error(`Erreur de chargement de la texture pour ${url}:`, err);
+                        // Utiliser un matériel de secours uni pour tous les blocs qui utilisaient cette URL
+                        for (const type in BLOCK_TEXTURES) {
+                            if (BLOCK_TEXTURES[type] === url) {
+                                materialCache[type] = new THREE.MeshLambertMaterial({ color: 0xFF0000 }); // Rouge pour indiquer l'erreur
+                                loadedCount++;
+                            }
+                        }
+                        
+                        if (loadedCount === blockTypes.length) {
+                            callback();
+                        }
+                    }
+                );
+            });
+        }
+
+        function init() {
+            // Appel de la nouvelle fonction de chargement de textures
+            loadTextures(() => {
+                
+                // 1. SCÈNE
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x70c5ff); 
+
+                // 2. CAMÉRA et GROUPE DU JOUEUR 
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.y = 0; 
+                
+                playerGroup = new THREE.Group(); 
+                playerGroup.position.set(0, 0, 0); 
+                
+                playerGroup.add(camera); 
+                scene.add(playerGroup);
+
+                // 3. RENDU (RENDERER)
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                document.body.appendChild(renderer.domElement);
+
+                // 4. ÉCLAIRAGE
+                const ambientLight = new THREE.AmbientLight(0x404040, 3.0); 
+                scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+                directionalLight.position.set(1, 2, 1);
+                scene.add(directionalLight);
+
+                // 5. CRÉATION DU MONDE GÉNÉRÉ
+                generateWorld(-2, -2, 4); 
+                
+                const startHeight = getTerrainHeight(0, 0);
+                playerGroup.position.y = startHeight + PLAYER_HEIGHT + 0.1; 
+                
+                // 6. GESTION DES ÉVÉNEMENTS
+                setupEventListeners();
+                
+                // 7. INITIALISATION DE L'INVENTAIRE ET DE L'OUTIL
+                updateInventoryUI();
+                updateToolUI();
+                
+                // 8. Démarrer l'animation
+                animate(0); 
+            }); 
+        }
+
+        function createBlock(x, y, z, type) {
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = getBlockKey(x, y, z);
+            
+            const chunkData = getChunkData(chunkKey);
+            chunkData[blockKey] = { x, y, z, type };
+        }
+
+        function generateWorld(startChunkX, startChunkZ, extent) {
+            for (let cx = startChunkX; cx < startChunkX + extent; cx++) {
+                for (let cz = startChunkZ; cz < startChunkZ + extent; cz++) {
+                    generateChunk(cx, cz);
+                }
+            }
+        }
+
+        function generateChunk(chunkX, chunkZ) {
+            const startX = chunkX * CHUNK_SIZE;
+            const startZ = chunkZ * CHUNK_SIZE;
+            
+            for (let x = startX; x < startX + CHUNK_SIZE; x++) {
+                for (let z = startZ; z < startZ + CHUNK_SIZE; z++) {
+                    const height = getTerrainHeight(x, z);
+                    
+                    createBlock(x, height, z, 'grass');
+                    
+                    for (let y = height - 1; y >= height - 3; y--) {
+                        createBlock(x, y, z, 'dirt');
+                    }
+                    
+                    for (let y = height - 4; y >= -10; y--) { 
+                        createBlock(x, y, z, 'rock');
+                    }
+                    
+                    if (Math.random() < 0.02) { // 2% chance de générer un arbre
+                        const treeHeight = Math.floor(Math.random() * 4) + 3; 
+                        for (let y = height + 1; y < height + 1 + treeHeight; y++) {
+                             createBlock(x, y, z, 'wood');
+                        }
+                    }
+                }
+            }
+            
+            updateChunkMesh(getChunkKey(startX, startZ)); 
+        }
+
+        // =========================================================================
+        // --- FONCTIONS DE GÉOMÉTRIE AVEC UV MAPPING LOCAL ---
+        // =========================================================================
+
+        /**
+         * Crée une BufferGeometry pour une seule face d'un bloc en utilisant le UV mapping local.
+         * Le `faceType` est 'top', 'bottom' ou 'side'.
+         */
+        function createFaceGeometry(v0, v1, v2, v3, faceType) {
+            const geo = new THREE.BufferGeometry();
+            
+            // Vertices (crée deux triangles)
+            const vertices = new Float32Array([
+                v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, // Triangle 1 (v0, v1, v2)
+                v2.x, v2.y, v2.z, v3.x, v3.y, v3.z, v0.x, v0.y, v0.z  // Triangle 2 (v2, v3, v0)
+            ]);
+
+            // Calcul de la normale pour le shading
+            const normal = new THREE.Vector3().subVectors(v1, v0).cross(new THREE.Vector3().subVectors(v2, v0)).normalize();
+            const normals = new Float32Array(Array(6).fill([normal.x, normal.y, normal.z]).flat());
+
+            // UVs: utilise le mapping 2x2 prédéfini
+            const uvs = new Float32Array(SINGLE_BLOCK_UV_MAP[faceType]);
+
+            geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+            geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+
+            geo.computeBoundingBox();
+            
+            return geo;
+        }
+
+
+        /**
+         * Construit et met à jour un groupe de Meshs (un par type de bloc) pour un chunk donné.
+         */
+        function updateChunkMesh(chunkKey) {
+            const chunkData = world[chunkKey];
+            if (!chunkData || Object.keys(materialCache).length === 0) return; 
+
+            // 1. Suppression de l'ancien Group/Mesh
+            if (chunkMeshes[chunkKey]) {
+                scene.remove(chunkMeshes[chunkKey]);
+                // Libérer les ressources
+                chunkMeshes[chunkKey].children.forEach(mesh => {
+                    mesh.geometry.dispose();
+                });
+                delete chunkMeshes[chunkKey];
+            }
+            
+            // Nouveau: Stocker les géométries par type de bloc (matériau)
+            const geometriesByBlockType = {};
+            
+            // 2. Parcourir les données du chunk et générer SEULEMENT les faces visibles
+            for (const blockKey in chunkData) {
+                const block = chunkData[blockKey];
+                const { x, y, z, type } = block;
+
+                const px = x;
+                const py = y;
+                const pz = z;
+
+                // Initialiser le tableau de géométries pour ce type de bloc si nécessaire
+                if (!geometriesByBlockType[type]) {
+                    geometriesByBlockType[type] = [];
+                }
+                
+                // Définition des 8 coins du bloc 
+                const corners = [
+                    new THREE.Vector3(px - 0.5, py, pz + 0.5),   // 0 (coin bas, avant-gauche)
+                    new THREE.Vector3(px + 0.5, py, pz + 0.5),   // 1 (coin bas, avant-droite)
+                    new THREE.Vector3(px - 0.5, py, pz - 0.5),   // 2 (coin bas, arrière-gauche)
+                    new THREE.Vector3(px + 0.5, py, pz - 0.5),   // 3 (coin bas, arrière-droite)
+                    new THREE.Vector3(px - 0.5, py + 1, pz + 0.5), // 4 (coin haut, avant-gauche)
+                    new THREE.Vector3(px + 0.5, py + 1, pz + 0.5), // 5 (coin haut, avant-droite)
+                    new THREE.Vector3(px - 0.5, py + 1, pz - 0.5), // 6 (coin haut, arrière-gauche)
+                    new THREE.Vector3(px + 0.5, py + 1, pz - 0.5)  // 7 (coin haut, arrière-droite)
+                ];
+
+                // --- TOP FACE (y + 1) -> utilise la section 'top' de la texture 'grass.png' ---
+                if (!isBlockSolid(x, y + 1, z)) {
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[4], corners[5], corners[7], corners[6], 'top'));
+                }
+                
+                // --- BOTTOM FACE (y - 1) -> utilise la section 'bottom' de la texture 'grass.png' ---
+                if (!isBlockSolid(x, y - 1, z)) {
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[2], corners[3], corners[1], 'bottom'));
+                }
+
+                // --- SIDE FACES -> utilisent la section 'side' de la texture 'grass.png' ---
+                if (!isBlockSolid(x, y, z + 1)) {
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[0], corners[1], corners[5], corners[4], 'side')); // FRONT
+                }
+                if (!isBlockSolid(x, y, z - 1)) {
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[3], corners[2], corners[6], corners[7], 'side')); // BACK
+                }
+                if (!isBlockSolid(x + 1, y, z)) {
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[1], corners[3], corners[7], corners[5], 'side')); // RIGHT
+                }
+                if (!isBlockSolid(x - 1, y, z)) {
+                    geometriesByBlockType[type].push(createFaceGeometry(corners[2], corners[0], corners[4], corners[6], 'side')); // LEFT
+                }
+            }
+            
+            // 3. Fusionner et ajouter les Meshs pour chaque type de bloc
+            const chunkGroup = new THREE.Group();
+            chunkGroup.name = `chunk-${chunkKey}`;
+            
+            for (const blockType in geometriesByBlockType) {
+                const geometriesToMerge = geometriesByBlockType[blockType];
+                
+                if (geometriesToMerge.length > 0) {
+                    const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometriesToMerge);
+                    const material = materialCache[blockType];
+                    
+                    if (material) {
+                        const mesh = new THREE.Mesh(mergedGeometry, material);
+                        chunkGroup.add(mesh);
+                    }
+                }
+            }
+            
+            // 4. Ajouter le groupe de chunk à la scène et le stocker
+            if (chunkGroup.children.length > 0) {
+                scene.add(chunkGroup);
+                chunkMeshes[chunkKey] = chunkGroup; 
+            }
+        }
+        
+        // --- LOGIQUE DE RAYCASTING (Mise à jour pour itérer sur les enfants des Groups) ---
+
+        function getTargetBlock() {
+            pointer.set(0, 0); 
+            raycaster.setFromCamera(pointer, camera);
+
+            // Collecter tous les Meshs enfants de tous les Groupes de chunks
+            const allChunkMeshes = Object.values(chunkMeshes).flatMap(group => group.children);
+            
+            const intersects = raycaster.intersectObjects(allChunkMeshes, false);
+
+            if (intersects.length > 0 && intersects[0].distance < MAX_REACH_DISTANCE) {
+                return intersects[0];
+            }
+            return null;
+        }
+
+        function getBlockCoordsFromRaycast(intersect) {
+             // La méthode est la même, mais maintenant nous trouvons la position du bloc à partir du point d'intersection
+             const point = intersect.point;
+             
+             // Utilisation de Math.floor pour obtenir les coordonnées du bloc
+             // On s'assure d'arrondir correctement pour la détection
+             const x = Math.round(point.x - 0.5 * intersect.face.normal.x);
+             const y = Math.round(point.y - 0.5 * intersect.face.normal.y);
+             const z = Math.round(point.z - 0.5 * intersect.face.normal.z);
+             
+             return { x, y, z };
+        }
+        
+        function getBlockDataFromCoords(x, y, z) {
+             const chunkKey = getChunkKey(x, z);
+             const blockKey = getBlockKey(x, y, z);
+             
+             if (world[chunkKey]) {
+                 const data = world[chunkKey][blockKey];
+                 if (data) return data;
+             }
+             return null;
+        }
+
+        function getBlockDataFromRaycast(intersect) {
+             const coords = getBlockCoordsFromRaycast(intersect);
+             return getBlockDataFromCoords(coords.x, coords.y, coords.z);
+        }
+
+        // --- Le reste du code (Physique, UI, Crafting, etc.) est inchangé) ---
+        
+        function updatePlayerMovement() {
+            if (!pointerLocked) return;
+
+            // --- 1. Mouvement Vertical (Gravité et Saut) ---
+            
+            velocityY += GRAVITY;
+            playerGroup.position.y += velocityY;
+
+            const floorHeight = getCurrentFloorHeight();
+            const playerFeetY = playerGroup.position.y - PLAYER_HEIGHT; 
+
+            if (playerFeetY < floorHeight) {
+                playerGroup.position.y = floorHeight + PLAYER_HEIGHT;
+                velocityY = 0;
+                onGround = true; 
+            } else {
+                onGround = false;
+            }
+
+            // --- 2. Mouvement Horizontal ---
+            const forward = new THREE.Vector3();
+            playerGroup.getWorldDirection(forward); 
+            forward.y = 0; 
+            forward.normalize();
+            const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
+            
+            const moveVector = new THREE.Vector3(0, 0, 0);
+
+            if (keys.s) moveVector.addScaledVector(forward, PLAYER_SPEED); 
+            if (keys.z) moveVector.addScaledVector(forward, -PLAYER_SPEED); 
+            if (keys.d) moveVector.addScaledVector(right, -PLAYER_SPEED); 
+            if (keys.q) moveVector.addScaledVector(right, PLAYER_SPEED); 
+
+            // Vérification de collision horizontale 
+            const feetBlockY = Math.floor(playerGroup.position.y - PLAYER_HEIGHT + 0.1); 
+            const headBlockY = Math.floor(playerGroup.position.y - 0.1); 
+            
+            const currentX = Math.round(playerGroup.position.x);
+            const currentZ = Math.round(playerGroup.position.z);
+            
+            const collisionCheckOffset = 0.5; 
+            
+            // Vérification du mouvement en X
+            if (Math.abs(moveVector.x) > 0.001) {
+                const proposedXBlock = Math.round(playerGroup.position.x + Math.sign(moveVector.x) * collisionCheckOffset);
+                
+                if (isBlockSolid(proposedXBlock, feetBlockY, currentZ) ||
+                    isBlockSolid(proposedXBlock, headBlockY, currentZ)) {
+                    moveVector.x = 0; 
+                }
+            }
+
+            // Vérification du mouvement en Z
+            if (Math.abs(moveVector.z) > 0.001) {
+                const proposedZBlock = Math.round(playerGroup.position.z + Math.sign(moveVector.z) * collisionCheckOffset);
+                
+                if (isBlockSolid(currentX, feetBlockY, proposedZBlock) ||
+                    isBlockSolid(currentX, headBlockY, proposedZBlock)) {
+                    moveVector.z = 0; 
+                }
+            }
+
+            playerGroup.position.x += moveVector.x;
+            playerGroup.position.z += moveVector.z;
+        }
+
+        function getCurrentFloorHeight() {
+            const pX = Math.round(playerGroup.position.x);
+            const pZ = Math.round(playerGroup.position.z);
+            
+            let floorY = -Infinity;
+            
+            for(let y = 10; y >= -10; y--) {
+                if (isBlockSolid(pX, y, pZ)) {
+                    floorY = y + 1; 
+                    break;
+                }
+            }
+            return floorY;
+        }
+        
+        function updateFPS(now) {
+            frameCount++;
+            const delta = now - lastTime;
+            if (delta >= 1000) {
+                fps = (frameCount * 1000) / delta;
+                document.getElementById('fpsIndicator').innerText = `FPS: ${Math.round(fps)}`;
+                frameCount = 0;
+                lastTime = now;
+            }
+        }
+        
+        function onMouseMove(event) {
+            if (!pointerLocked) return;
+
+            playerGroup.rotation.y -= event.movementX * 0.002;
+
+            let pitch = camera.rotation.x - event.movementY * 0.002;
+            pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+            camera.rotation.x = pitch;
+        }
+
+        function onMouseDown(event) {
+            if (!pointerLocked) return;
+            
+            const intersect = getTargetBlock();
+
+            // --- Clic Gauche (0) : Démarrer le Minage ---
+            if (event.button === 0) {
+                if (intersect) {
+                    // On utilise le parent du mesh touché pour trouver le type de bloc
+                    const blockData = getBlockDataFromRaycast(intersect);
+                    if (blockData) {
+                        targetedBlock = blockData; 
+                        isMining = true; 
+                        miningStartTime = Date.now();
+                    }
+                }
+            } 
+            // --- Clic Droit (2) : Placer un bloc ---
+            else if (event.button === 2) {
+                if (!intersect) return;
+                
+                const targetBlockCoords = getBlockCoordsFromRaycast(intersect);
+                
+                // La normale de l'intersection indique la direction de la face touchée.
+                const normal = intersect.face.normal.clone();
+
+                const dx = Math.round(normal.x);
+                const dy = Math.round(normal.y);
+                const dz = Math.round(normal.z);
+
+                // Calcule le bloc voisin pour placer
+                const newX = targetBlockCoords.x + dx;
+                const newY = targetBlockCoords.y + dy;
+                const newZ = targetBlockCoords.z + dz;
+                
+                placeBlock(newX, newY, newZ);
+            }
+        }
+        
+        // --- Boucle d'Animation (Game Loop) ---
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            
+            updatePlayerMovement(); 
+            updateMiningProgress(); 
+            updateFPS(now); 
+
+            renderer.render(scene, camera);
+        }
+        
+        // --- Fonctions UI et Event Listeners (inchangées) ---
+
+        function setupEventListeners() {
+            const startButton = document.getElementById('startButton');
+            startButton.addEventListener('click', () => {
+                renderer.domElement.requestPointerLock();
+            });
+
+            document.addEventListener('pointerlockchange', () => {
+                pointerLocked = document.pointerLockElement === renderer.domElement;
+                const uiContainer = document.getElementById('uiContainer');
+                const crosshair = document.getElementById('crosshair');
+                const craftingContainer = document.getElementById('craftingContainer');
+
+                if (pointerLocked) {
+                    uiContainer.style.display = 'none';
+                    craftingContainer.style.display = 'none'; 
+                    crosshair.style.display = 'block';
+                    document.addEventListener('keydown', onKeyDown, false);
+                    document.addEventListener('keyup', onKeyUp, false);
+                    document.addEventListener('mousemove', onMouseMove, false);
+                    document.addEventListener('mousedown', onMouseDown, false);
+                    document.addEventListener('mouseup', onMouseUp, false); 
+                    document.addEventListener('contextmenu', onContextMenu, false);
+                    velocityY = 0; 
+                } else {
+                    uiContainer.style.display = 'block';
+                    crosshair.style.display = 'none';
+                    document.removeEventListener('keydown', onKeyDown, false);
+                    document.removeEventListener('keyup', onKeyUp, false);
+                    document.removeEventListener('mousemove', onMouseMove, false);
+                    document.removeEventListener('mousedown', onMouseDown, false);
+                    document.removeEventListener('mouseup', onMouseUp, false);
+                    document.removeEventListener('contextmenu', onContextMenu, false);
+                    isMining = false; 
+                }
+            }, false);
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+        
+        function onContextMenu(event) { event.preventDefault(); }
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            const key = event.key.toLowerCase();
+            
+            if (key === '1' || key === '2' || key === '3' || key === '4') { selectItemByIndex(parseInt(key)); } 
+            if (key === 't') { toggleCraftingUI(); }
+
+            if (key === ' ' && onGround) {
+                velocityY = JUMP_POWER;
+                onGround = false;
+                event.preventDefault(); 
+            }
+            if (keys.hasOwnProperty(key)) {
+                keys[key] = true;
+                event.preventDefault();
+            }
+        }
+        function onKeyUp(event) {
+            const key = event.key.toLowerCase();
+            if (keys.hasOwnProperty(key)) { keys[key] = false; }
+        }
+        
+        function onMouseUp(event) {
+            if (event.button === 0) {
+                isMining = false;
+                targetedBlock = null;
+                document.getElementById('miningProgress').style.display = 'none'; 
+            }
+        }
+        
+        function craftItem(itemId) {
+            const recipe = craftingRecipes[itemId];
+            if (!recipe) { console.error(`Recette inconnue: ${itemId}`); return false; }
+
+            for (const requiredItem in recipe.required) {
+                const requiredCount = recipe.required[requiredItem];
+                if (!inventory[requiredItem] || inventory[requiredItem].count < requiredCount) { return false; }
+            }
+            for (const requiredItem in recipe.required) { inventory[requiredItem].count -= recipe.required[requiredItem]; }
+
+            if (inventory[itemId]) {
+                if (recipe.toolType) { inventory[itemId].count += 1; inventory[itemId].durability = 50; } else { inventory[itemId].count += 1; }
+            } else {
+                console.error(`Erreur: Item crafté (${itemId}) non trouvé dans l'inventaire principal.`);
+            }
+
+            updateInventoryUI();
+            updateCraftingUI();
+            updateToolUI(); 
+        }
+        
+        function toggleCraftingUI() {
+            const craftingContainer = document.getElementById('craftingContainer');
+            const isVisible = craftingContainer.style.display === 'flex';
+            
+            if (isVisible) {
+                craftingContainer.style.display = 'none';
+                if (document.pointerLockElement !== renderer.domElement) { renderer.domElement.requestPointerLock(); }
+            } else {
+                craftingContainer.style.display = 'flex';
+                document.exitPointerLock(); 
+                updateCraftingUI();
+            }
+        }
+
+        function updateCraftingUI() {
+            const list = document.getElementById('recipesList');
+            list.innerHTML = ''; 
+
+            for (const itemId in craftingRecipes) {
+                const recipe = craftingRecipes[itemId];
+                let canCraft = true;
+                const requirements = [];
+
+                for (const requiredItem in recipe.required) {
+                    const requiredCount = recipe.required[requiredItem];
+                    const currentCount = inventory[requiredItem] ? inventory[requiredItem].count : 0;
+                    const sufficient = currentCount >= requiredCount;
+                    if (!sufficient) canCraft = false;
+                    requirements.push(
+                        `<span style="color: ${sufficient ? '#48bb78' : '#f56565'};">${currentCount}/${requiredCount} ${inventory[requiredItem].name}</span>`
+                    );
+                }
+
+                const recipeDiv = document.createElement('div');
+                recipeDiv.className = 'flex justify-between items-center bg-gray-700 p-3 rounded-md';
+                recipeDiv.innerHTML = `
+                    <div class="text-lg font-medium">${recipe.name}</div>
+                    <div class="text-sm italic">${requirements.join(', ')}</div>
+                    <button class="craft-button ${canCraft ? 'bg-yellow-500 hover:bg-yellow-600' : 'bg-gray-500 cursor-not-allowed'}" 
+                            data-item-id="${itemId}" ${canCraft ? '' : 'disabled'}>
+                        Craft
+                    </button>
+                `;
+                list.appendChild(recipeDiv);
+            }
+            document.querySelectorAll('.craft-button').forEach(button => {
+                button.onclick = () => craftItem(button.getAttribute('data-item-id'));
+            });
+        }
+        
+        function updateInventoryUI() {
+            const slots = document.querySelectorAll('#inventory .slot');
+            slots.forEach((slot, index) => {
+                const numberKey = index + 1; 
+
+                const itemId = slot.getAttribute('data-item-id');
+                const item = inventory[itemId];
+                if (!item) return; 
+
+                const count = item.count;
+                const name = item.name;
+
+                slot.innerHTML = `
+                    <span class="slot-name">${name}</span> 
+                    <span class="text-xs text-gray-300">(${numberKey})</span>
+                    <span class="slot-count mt-1">x${count}</span>
+                `;
+                slot.classList.toggle('selected', itemId === selectedItemId);
+                slot.onclick = () => { selectedItemId = itemId; updateInventoryUI(); };
+            });
+        }
+        
+        function updateToolUI() {
+            const toolSlot = document.getElementById('toolSlot');
+            const toolName = document.getElementById('equippedToolName');
+            
+            if (equippedToolId && inventory[equippedToolId]) {
+                const tool = inventory[equippedToolId];
+                toolName.innerText = `${tool.name} (${tool.durability})`;
+                toolSlot.style.borderColor = '#4CAF50'; 
+            } else {
+                toolName.innerText = 'Main';
+                toolSlot.style.borderColor = '#ccc'; 
+            }
+        }
+        
+        function selectItemByIndex(index) {
+            const slots = document.querySelectorAll('#inventory .slot');
+            const targetSlot = slots[index - 1]; 
+            if (targetSlot) {
+                selectedItemId = targetSlot.getAttribute('data-item-id');
+                updateInventoryUI();
+            }
+        }
+
+
+        // Démarrage de l'application au chargement de la fenêtre
+        window.onload = init;
+
+    </script>
+</body>
+</html>
