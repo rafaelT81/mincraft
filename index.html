@@ -3,11 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu Voxel 3D - Seed et Perlin Noise</title>
+    <title>Jeu Voxel 3D - Seed et Persistance Firebase</title>
     <!-- Chargement de la bibliothèque Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Outil nécessaire pour fusionner les géométries (performance) -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+
+    <!-- Import des modules Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Exposer les modules Firebase à la portée globale (window) pour utilisation dans le script principal
+        window.firebaseImports = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
+            getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel
+        };
+    </script>
+
     <style>
         /* Styles pour que le jeu prenne toute la page */
         body { margin: 0; overflow: hidden; background-color: #70c5ff; }
@@ -25,6 +39,7 @@
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
             text-align: center;
+            font-family: sans-serif;
         }
         #startButton {
             padding: 15px 30px;
@@ -46,7 +61,7 @@
         #instructions {
             margin-top: 15px;
             color: white;
-            font-family: sans-serif;
+            font-size: 14px;
         }
         
         /* Conteneur des indicateurs (FPS et Coordonnées) */
@@ -60,19 +75,14 @@
             text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
         }
 
-        #fpsIndicator, #coordsIndicator {
+        #fpsIndicator, #coordsIndicator, #userIdIndicator {
             background-color: rgba(0, 0, 0, 0.5);
             padding: 5px 10px;
             border-radius: 5px;
-            margin-bottom: 5px; /* Espace entre FPS et Coords */
+            margin-bottom: 5px; 
+            font-size: 12px;
         }
         
-        /* MIS À JOUR: L'indicateur de coordonnées est maintenant minimaliste */
-        #coordsIndicator {
-            padding: 5px 10px;
-        }
-
-
         /* Réticule (Crosshair) */
         #crosshair {
             position: fixed;
@@ -112,7 +122,7 @@
             color: white;
             font-size: 10px;
             cursor: pointer;
-            transition: border-color 0.1s;
+            transition: border-color 0.1s, transform 0.1s;
             line-height: 1.2;
             text-align: center;
         }
@@ -146,6 +156,7 @@
     </div>
     
     <div id="statusIndicators">
+        <div id="userIdIndicator">ID Joueur: Chargement...</div>
         <div id="fpsIndicator">FPS: --</div>
         <!-- Coordonnées minimalistes (X Y Z) -->
         <div id="coordsIndicator">-- -- --</div>
@@ -159,7 +170,6 @@
         <div class="slot selected" data-block-type="grass">Herbe (1)</div>
         <div class="slot" data-block-type="dirt">Terre (2)</div>
         <div class="slot" data-block-type="rock">Roche (3)</div>
-        <!-- Nouveaux Blocs dans l'inventaire pour le test -->
         <div class="slot" data-block-type="wood">Bois (4)</div>
         <div class="slot" data-block-type="leaves">Feuilles (5)</div>
     </div>
@@ -167,15 +177,11 @@
     <script>
         
         // --- 0. Générateur de Bruit de Perlin Simplex (Simple Implémentation) ---
-        // Utilisé pour générer des reliefs organiques et fluides basés sur une graine (seed)
-
         const PerlinNoise = (function() {
             let p = new Uint8Array(512);
             let permutation = [];
             
-            // Fonction interne d'initialisation du tableau de permutation
             function initPermutation(seed) {
-                // Fonction de hachage simple pour la graine (seed)
                 let rng = new (function() {
                     let s = seed || Date.now();
                     this.next = function() {
@@ -185,14 +191,10 @@
                 })();
 
                 permutation = Array.from({ length: 256 }, (_, i) => i);
-
-                // Mélange de Fisher-Yates (Shuffle)
                 for (let i = 255; i > 0; i--) {
                     const j = Math.floor(rng.next() * (i + 1));
                     [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
                 }
-                
-                // Dupliquer le tableau pour éviter les vérifications de débordement
                 for (let i = 0; i < 256; i++) {
                     p[i] = p[i + 256] = permutation[i];
                 }
@@ -237,9 +239,31 @@
                                                   grad(p[BB + 1], x - 1, y - 1, z - 1))));
             }
             
+            function noise2d(x, z) {
+                 let X = Math.floor(x) & 255;
+                 let Z = Math.floor(z) & 255;
+                 
+                 x -= Math.floor(x);
+                 z -= Math.floor(z);
+
+                 let u = fade(x);
+                 let w = fade(z);
+
+                 let A = p[X] + 0; 
+                 let AA = p[A] + Z;
+                 let B = p[X + 1] + 0; 
+                 let BA = p[B] + Z;
+
+                 return lerp(w, lerp(u, grad(p[AA], x, 0, z),
+                                          grad(p[BA], x - 1, 0, z)),
+                                  lerp(u, grad(p[AA + 1], x, 0, z - 1), 
+                                          grad(p[BA + 1], x - 1, 0, z - 1))); 
+            }
+
             return {
-                init: initPermutation, // Exposer la fonction d'initialisation de la graine
-                noise: noise
+                init: initPermutation,
+                noise: noise,
+                noise2d: noise2d
             };
         })();
 
@@ -248,6 +272,13 @@
         let scene, camera, renderer, playerGroup;
         const chunkData = {}; 
         const chunkMeshes = {}; 
+        
+        // Variables Firebase
+        let db;
+        let auth;
+        let userId;
+        let appId;
+        const activeListeners = {}; // Pour gérer les abonnements onSnapshot
         
         // Raycasting
         const raycaster = new THREE.Raycaster();
@@ -258,27 +289,29 @@
             'grass': { count: 999 },
             'dirt': { count: 999 },
             'rock': { count: 999 },
-            'wood': { count: 999 }, // NOUVEAU
-            'leaves': { count: 999 } // NOUVEAU
+            'wood': { count: 999 },
+            'leaves': { count: 999 }
         };
         let selectedBlockType = 'grass'; 
         
         // Configuration de la Génération du Monde
-        const CHUNK_SIZE = 5; // Taille de chunk 
-        const CHUNK_COUNT = 10; // Nombre de chunks par axe (Total: 100 chunks)
-        const WORLD_SIZE = CHUNK_SIZE * CHUNK_COUNT; // 50x50 blocs
-        const WORLD_HALF_SIZE = WORLD_SIZE / 2; // 25
-        
-        // Graine du Monde (Seed)
-        const WORLD_SEED = 12345; // Graine statique pour la reproductibilité
+        const CHUNK_SIZE = 5; 
+        const RENDER_RADIUS = 4; 
+        let lastChunkKey = "0,0"; 
 
-        // MISE À JOUR : Ajout de wood.png et leave.png
+        // Graine du Monde (Seed)
+        const WORLD_SEED = 12345; 
+
+        // Pour la mise à jour des chunks dans la boucle d'animation
+        let chunkUpdateCounter = 0;
+        const CHUNK_UPDATE_INTERVAL = 60; 
+
         const BLOCK_TEXTURES_URL = {
             grass: { url: 'grass.png', top: [0, 1], bottom: [0, 0], side: [1, 1] }, 
             dirt: { url: 'dirt.png', all: [0, 0] },
             rock: { url: 'rock.png', all: [1, 1] },
-            wood: { url: 'wood.png', top: [0, 1], bottom: [0, 1], side: [1, 1] }, // Tronc: texture différente pour les côtés vs haut/bas
-            leaves: { url: 'leave.png', all: [0, 1] } // Feuilles: texture uniforme
+            wood: { url: 'wood.png', top: [0, 1], bottom: [0, 1], side: [1, 1] },
+            leaves: { url: 'leave.png', all: [0, 1] }
         };
 
         const materials = {}; 
@@ -287,7 +320,7 @@
         // Configuration du joueur/caméra
         const PLAYER_HEIGHT = 1.6; 
         const PLAYER_HORIZONTAL_INSET = 0.3; 
-        const PLAYER_SPEED = 0.12; 
+        const PLAYER_SPEED = 0.15; 
         const MAX_REACH_DISTANCE = 7; 
         
         // Variables de Physique
@@ -295,12 +328,12 @@
         const GRAVITY = -0.035; 
         const JUMP_POWER = 0.35; 
         let onGround = false; 
+        let initialSpawnSet = false; 
 
-        // État des touches pour le mouvement (ZQSD + Espace + 1-5 pour inventaire)
         const keys = {
             z: false, q: false, s: false, d: false,
             ' ': false, 
-            '1': false, '2': 'false', '3': false, '4': false, '5': false // NOUVEAU
+            '1': false, '2': 'false', '3': false, '4': false, '5': false
         };
 
         const CUBE_FACES = [
@@ -319,52 +352,78 @@
         let frameCount = 0;
         let fps = 0;
         
+        // --- Fonctions d'Utilité Firestore ---
+        
+        function getChunkDocRef(chunkKey) {
+            // Chemin de stockage public: /artifacts/{appId}/public/data/chunks/{chunkKey}
+            // L'ID de la collection parent est 'artifacts'
+            const artifactId = appId; // Utilise l'ID de l'application
+            const collectionPath = `/artifacts/${artifactId}/public/data/chunks`;
+            
+            // Assurez-vous que db est initialisé
+            if (!db) {
+                console.error("Firestore n'est pas initialisé.");
+                return null;
+            }
+            return firebaseImports.doc(db, collectionPath, chunkKey); 
+        }
+
         // --- NOUVELLE FONCTION: Trouver le Chunk à partir des coordonnées mondiales ---
         function getChunkKey(x, z) {
-            // Déterminer les coordonnées du chunk
             const chunkX = Math.floor(x / CHUNK_SIZE);
             const chunkZ = Math.floor(z / CHUNK_SIZE);
             return `${chunkX},${chunkZ}`;
+        }
+        
+        function getCurrentPlayerChunkKey() {
+            const x = playerGroup.position.x;
+            const z = playerGroup.position.z;
+            return getChunkKey(x, z);
         }
 
         // --- Fonctions d'Interaction avec le Monde ---
         
         /**
-         * Met à jour le monde de données et l'affichage 3D.
+         * Met à jour le monde de données et l'affichage 3D, puis sauvegarde le chunk sur Firestore.
          */
-        function updateWorld(x, y, z, newType = null) {
+        async function updateWorld(x, y, z, newType = null) {
             const chunkKey = getChunkKey(x, z);
             const blockKey = `${x},${y},${z}`;
+            
+            const docRef = getChunkDocRef(chunkKey);
+            if (!docRef) return; 
 
+            // Si le chunk n'est pas chargé (pas dans chunkData), on ne peut pas y interagir.
             if (!chunkData[chunkKey]) {
-                // Si le chunk n'existe pas, il n'y a pas de mesh à mettre à jour, ou le bloc est hors du monde généré.
-                // Lors de la pose d'un bloc en dehors de la zone générée, on ne fait rien pour l'instant
-                return;
+                console.warn(`Tentative d'interaction avec un chunk non chargé: ${chunkKey}`);
+                return; 
             }
 
+            // 1. Mise à jour locale (Immédiate)
             if (newType) {
                 chunkData[chunkKey][blockKey] = { x, y, z, type: newType };
             } else {
                 delete chunkData[chunkKey][blockKey];
             }
 
-            // --- 1. MISE À JOUR CIBLÉE DU CHUNK d'origine ---
-            renderChunk(chunkKey);
+            // 2. Persistance sur Firestore (Asynchrone)
+            try {
+                // Sérialiser les données du chunk pour le stockage
+                const serializedData = JSON.stringify(chunkData[chunkKey]); 
+                
+                // setDoc fusionne avec le document existant
+                await firebaseImports.setDoc(docRef, { blocks: serializedData }, { merge: true }); 
 
-            // --- 2. Vérification et Mise à Jour des CHUNKS VOISINS si le bloc est sur une bordure ---
-            
-            const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
-            // Calcul de la position locale du bloc dans son chunk (0 à CHUNK_SIZE - 1)
-            // On utilise le modulo pour les coordonnées locales, en s'assurant qu'il est positif.
-            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE; 
-            const localZ = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
-
-            // Si le bloc est sur une des 4 frontières
-            if (localX === 0 || localX === CHUNK_SIZE - 1 || 
-                localZ === 0 || localZ === CHUNK_SIZE - 1) 
-            {
+                // --- CONFIRMATION DE LOG CRITIQUE ---
+                console.log(`[FIREBASE] Chunk ${chunkKey} sauvegardé. Path: ${docRef.path}`);
+                
+                // Le re-rendu sera géré par l'onSnapshot du chunk,
+                // mais on force le re-rendu des voisins pour la suppression immédiate des faces d'occlusion.
                 const neighborKeys = getNeighborChunkKeys(x, z);
                 neighborKeys.forEach(key => renderChunk(key));
+
+            } catch (error) {
+                 console.error("Erreur de sauvegarde Firestore:", error);
             }
         }
         
@@ -376,29 +435,14 @@
             const chunkX = Math.floor(x / CHUNK_SIZE);
             const chunkZ = Math.floor(z / CHUNK_SIZE);
 
-            // Calcul de la position locale du bloc (0 à CHUNK_SIZE - 1)
-            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE; 
             const localZ = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
-            
-            // Si le bloc est sur la bordure X- (localX = 0)
-            if (localX === 0) {
-                keys.add(`${chunkX - 1},${chunkZ}`);
-            }
-            // Si le bloc est sur la bordure X+ (localX = CHUNK_SIZE - 1)
-            if (localX === CHUNK_SIZE - 1) {
-                keys.add(`${chunkX + 1},${chunkZ}`);
-            }
-            
-            // Si le bloc est sur la bordure Z- (localZ = 0)
-            if (localZ === 0) {
-                keys.add(`${chunkX},${chunkZ - 1}`);
-            }
-            // Si le bloc est sur la bordure Z+ (localZ = CHUNK_SIZE - 1)
-            if (localZ === CHUNK_SIZE - 1) {
-                keys.add(`${chunkX},${chunkZ + 1}`);
-            }
 
-            // Filtrer pour ne garder que les clés de chunks qui existent dans la scène
+            if (localX === 0) keys.add(`${chunkX - 1},${chunkZ}`);
+            if (localX === CHUNK_SIZE - 1) keys.add(`${chunkX + 1},${chunkZ}`);
+            if (localZ === 0) keys.add(`${chunkX},${chunkZ - 1}`);
+            if (localZ === CHUNK_SIZE - 1) keys.add(`${chunkX},${chunkZ + 1}`);
+
             return Array.from(keys).filter(key => chunkMeshes.hasOwnProperty(key));
         }
 
@@ -425,7 +469,6 @@
         function placeBlock(x, y, z) {
             const typeToPlace = selectedBlockType;
             if (!typeToPlace || inventory[typeToPlace].count <= 0) {
-                // console.log("Inventaire vide ou aucun bloc sélectionné.");
                 return;
             }
 
@@ -470,26 +513,22 @@
 
         // --- Fonctions de Génération Procédurale (avec Perlin Noise) ---
         
-        const TERRAIN_SCALE = 0.05; // Finesse du détail (plus petit = plus lisse)
-        const TERRAIN_AMPLITUDE = 10; // Hauteur maximale des pics
+        const TERRAIN_SCALE = 0.05; 
+        const TERRAIN_AMPLITUDE = 10; 
+        const TREE_NOISE_SCALE = 0.5; 
+        const TREE_THRESHOLD = 0.7; 
 
         /**
          * Calcule la hauteur du terrain à la position (x, z) en utilisant le bruit de Perlin.
          */
         function getTerrainHeight(x, z) {
-            // Utiliser la fonction de bruit 3D (Z est constant ici)
             const noiseValue = PerlinNoise.noise(x * TERRAIN_SCALE, z * TERRAIN_SCALE, 0); 
-            
-            // Le bruit de Perlin renvoie une valeur entre -1 et 1.
-            // On la mappe à une hauteur entre 0 et TERRAIN_AMPLITUDE (ajusté pour être au-dessus de y=-10)
             const height = (noiseValue + 1) * 0.5 * TERRAIN_AMPLITUDE; 
-
-            // Retourner une hauteur entière (pour les blocs)
             return Math.floor(height);
         }
         
         /**
-         * Vérifie si un bloc existe à la position (x, y, z).
+         * Vérifie si un bloc existe à la position (x, y, z) dans les données de chunk.
          */
         function isBlockSolid(x, y, z) {
             const chunkKey = getChunkKey(x, z);
@@ -500,9 +539,6 @@
 
         // --- Fonctions d'Initialisation ---
         
-        /**
-         * Charge toutes les textures nécessaires.
-         */
         function loadTextures() {
             const loader = new THREE.TextureLoader();
             const promises = [];
@@ -527,7 +563,6 @@
                             },
                             undefined,
                             (error) => {
-                                // Fallback pour les textures non trouvées (wood.png et leave.png)
                                 console.warn(`[ATTENTION TEXTURE] La texture : ${url} n'a pas pu être chargée. Utilisation d'un repli coloré.`);
                                 textures[url] = 'error_fallback'; 
                                 resolve(); 
@@ -545,8 +580,8 @@
                 'grass': 0x4CAF50,
                 'dirt': 0x795548,
                 'rock': 0x9E9E9E,
-                'wood': 0x8D6E63, // Couleur de repli pour le bois
-                'leaves': 0x8BC34A // Couleur de repli pour les feuilles
+                'wood': 0x8D6E63,
+                'leaves': 0x8BC34A
             };
 
             for (const type in BLOCK_TEXTURES_URL) {
@@ -556,7 +591,6 @@
                 let material;
 
                 if (texture === 'error_fallback' || !texture) {
-                    // Utiliser la couleur de repli spécifique au type
                     material = new THREE.MeshLambertMaterial({ color: fallbackColors[type] || 0xcccccc });
                 } else {
                     material = new THREE.MeshLambertMaterial({ map: texture });
@@ -568,21 +602,56 @@
 
 
         async function init() {
-            // 0. Initialisation du bruit de Perlin avec la graine
+            // Attendre que les imports Firebase soient chargés
+            while (typeof window.firebaseImports === 'undefined') {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            
+            // --- 0. Initialisation Firebase et Auth ---
+            // Le chemin de l'artifact est basé sur l'appId, il est donc essentiel de le définir.
+            appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+
+            try {
+                // Initialisation et connexion
+                const app = firebaseImports.initializeApp(firebaseConfig);
+                db = firebaseImports.getFirestore(app);
+                auth = firebaseImports.getAuth(app);
+                
+                // Activez les logs de débogage pour Firestore
+                firebaseImports.setLogLevel('Debug'); 
+
+                if (typeof __initial_auth_token !== 'undefined') {
+                    await firebaseImports.signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await firebaseImports.signInAnonymously(auth);
+                }
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                document.getElementById('userIdIndicator').innerText = `ID Joueur: ${userId}`;
+                console.log(`[FIREBASE] App ID utilisé: ${appId}`);
+
+            } catch (error) {
+                console.error("Erreur d'initialisation Firebase:", error);
+                document.getElementById('userIdIndicator').innerText = `Erreur Auth: ${error.message.substring(0, 20)}...`;
+                // Continuer avec un userId par défaut si l'auth échoue
+                if (!userId) userId = 'anonymous-' + crypto.randomUUID(); 
+            }
+            
+            // 1. Initialisation du bruit de Perlin avec la graine
             PerlinNoise.init(WORLD_SEED);
             document.getElementById('currentSeed').innerText = WORLD_SEED;
             
-            // 1. Chargement des textures
+            // 2. Chargement des textures
             await loadTextures();
             
-            // 2. Initialisation des matériaux
+            // 3. Initialisation des matériaux
             initMaterials();
             
-            // 3. SCÈNE
+            // 4. SCÈNE
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x70c5ff); 
 
-            // 4. CAMÉRA et GROUPE DU JOUEUR 
+            // 5. CAMÉRA et GROUPE DU JOUEUR 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             camera.position.y = 0; 
             playerGroup = new THREE.Group(); 
@@ -591,85 +660,76 @@
             playerGroup.add(camera); 
             scene.add(playerGroup);
 
-            // 5. RENDU (RENDERER)
+            // 6. RENDU (RENDERER)
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
-            // 6. ÉCLAIRAGE
+            // 7. ÉCLAIRAGE
             const ambientLight = new THREE.AmbientLight(0x808080);
             scene.add(ambientLight);
             const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
             directionalLight.position.set(1, 2, 1);
             scene.add(directionalLight);
 
-            // 7. CRÉATION DU MONDE GÉNÉRÉ
-            generateWorld(); 
+            // 8. DÉMARRAGE DU SYSTÈME DE CHUNKS DYNAMIQUES
+            updateActiveChunks(true); // Initialiser le monde
             
-            // CORRECTION DU SPAWN: Le joueur apparaît au centre du monde (0, 0)
-            const terrainY = getTerrainHeight(0, 0); 
-            playerGroup.position.y = (terrainY + 1) + PLAYER_HEIGHT; 
-            
-            // 8. GESTION DES ÉVÉNEMENTS
+            // 9. GESTION DES ÉVÉNEMENTS
             setupEventListeners();
             
-            // 9. INITIALISATION DE L'INVENTAIRE
+            // 10. INITIALISATION DE L'INVENTAIRE
             updateInventoryUI();
             
             // Démarrer l'animation
             animate();
         }
-
-        /**
-         * Enregistre le bloc dans la structure de données de chunk appropriée.
-         */
-        function createBlock(x, y, z, type) {
-            const chunkKey = getChunkKey(x, z);
-            const blockKey = `${x},${y},${z}`;
-
-            if (!chunkData[chunkKey]) {
-                chunkData[chunkKey] = {};
-                // Créer le groupe Three.js pour le chunk
-                chunkMeshes[chunkKey] = new THREE.Group();
-                chunkMeshes[chunkKey].name = `Chunk-${chunkKey}`;
-                scene.add(chunkMeshes[chunkKey]);
-            }
-            chunkData[chunkKey][blockKey] = { x, y, z, type };
-        }
         
         /**
-         * NOUVEAU: Génère un arbre simple à une position donnée.
+         * Génère un arbre simple à une position donnée, écrivant dans le data object.
          */
-        function generateTree(baseX, baseZ, groundY) {
-            const trunkHeight = Math.floor(Math.random() * 2) + 4; // 4 or 5 blocks high
-            const leafHeight = 3;
-            const leafRadius = 1; // 3x3 cube total (radius 1 from center)
+        function generateTreeData(data, baseX, baseZ, groundY) {
+            const treeSeed = PerlinNoise.noise2d(baseX * 0.1 + WORLD_SEED, baseZ * 0.1 + WORLD_SEED);
+            const trunkHeight = Math.floor(Math.abs(treeSeed) * 2) + 4; 
+            const leafRadius = 1; 
+
+            const addBlock = (x, y, z, type) => {
+                 const key = `${x},${y},${z}`;
+                 if (!data[key]) { 
+                    data[key] = { x, y, z, type };
+                 }
+            };
 
             // 1. Générer le Tronc
             for (let y = 0; y < trunkHeight; y++) {
-                // Le tronc commence juste au-dessus du bloc de sol (groundY + 1)
-                createBlock(baseX, groundY + 1 + y, baseZ, 'wood');
+                addBlock(baseX, groundY + 1 + y, baseZ, 'wood');
             }
 
             // 2. Générer le Feuillage
-            const leafBaseY = groundY + trunkHeight + 1; 
+            const leafBaseY = groundY + trunkHeight; 
+            
+            for (let dx = -leafRadius; dx <= leafRadius; dx++) {
+                for (let dz = -leafRadius; dz <= leafRadius; dz++) {
+                    if (dx === 0 && dz === 0) continue; 
+                    addBlock(baseX + dx, leafBaseY, baseZ + dz, 'leaves');
+                }
+            }
 
-            for (let dy = -1; dy < leafHeight; dy++) { // Vertical layers (-1, 0, 1) pour un meilleur positionnement
-                for (let dx = -leafRadius; dx <= leafRadius; dx++) { // X offset
-                    for (let dz = -leafRadius; dz <= leafRadius; dz++) { // Z offset
-                        
+            for (let dy = 1; dy <= 2; dy++) {
+                for (let dx = -leafRadius; dx <= leafRadius; dx++) {
+                    for (let dz = -leafRadius; dz <= leafRadius; dz++) {
                         const currentY = leafBaseY + dy;
                         
-                        // Condition pour affiner la forme (ex: pas de coins sur la couche la plus basse)
-                        if (dy === -1 && Math.abs(dx) === leafRadius && Math.abs(dz) === leafRadius) {
+                        if (dy === 1 && (Math.abs(dx) === leafRadius && Math.abs(dz) === leafRadius)) {
                             continue; 
                         }
-                        
-                        // Si l'espace est vide, on place les feuilles
-                        if (!isBlockSolid(baseX + dx, currentY, baseZ + dz)) {
-                            createBlock(baseX + dx, currentY, baseZ + dz, 'leaves');
+
+                        if (dy === 2 && (Math.abs(dx) > 0 || Math.abs(dz) > 0)) {
+                             if (Math.abs(dx) + Math.abs(dz) > leafRadius) continue;
                         }
+
+                        addBlock(baseX + dx, currentY, baseZ + dz, 'leaves');
                     }
                 }
             }
@@ -677,48 +737,176 @@
 
 
         /**
-         * Génère l'ensemble du monde (10x10 chunks de 5x5 blocs).
+         * Génère les données des blocs pour un seul chunk de manière procédurale.
          */
-        function generateWorld() {
-            console.log(`Génération du monde de ${CHUNK_COUNT}x${CHUNK_COUNT} chunks (${WORLD_SIZE}x${WORLD_SIZE} blocs) avec CHUNK_SIZE = ${CHUNK_SIZE}...`);
-            
-            const startX = -WORLD_HALF_SIZE;
-            const endX = WORLD_HALF_SIZE;
-            const startZ = -WORLD_HALF_SIZE;
-            const endZ = WORLD_HALF_SIZE;
+        function generateProceduralChunkData(chunkX, chunkZ) {
+            const data = {};
+            const startX = chunkX * CHUNK_SIZE;
+            const endX = startX + CHUNK_SIZE;
+            const startZ = chunkZ * CHUNK_SIZE;
+            const endZ = startZ + CHUNK_SIZE;
 
             for (let x = startX; x < endX; x++) {
                 for (let z = startZ; z < endZ; z++) {
                     const height = getTerrainHeight(x, z);
                     
                     // Couche de surface
-                    createBlock(x, height, z, 'grass');
+                    data[`${x},${height},${z}`] = { x, y: height, z, type: 'grass' };
                     
                     // Sous-couche de terre
                     for (let y = height - 1; y >= height - 3; y--) {
-                        createBlock(x, y, z, 'dirt');
+                        data[`${x},${y},${z}`] = { x, y, z, type: 'dirt' };
                     }
                     
                     // Couche de roche (profonde)
                     for (let y = height - 4; y >= -10; y--) { 
-                        createBlock(x, y, z, 'rock');
+                        data[`${x},${y},${z}`] = { x, y, z, type: 'rock' };
                     }
                     
-                    // NOUVEAU: Tentative de placement d'arbre
-                    if (Math.random() < 0.01) { // 1% de chance par bloc
-                        generateTree(x, z, height);
+                    // Placement d'arbre
+                    const treeNoise = PerlinNoise.noise2d(x * TREE_NOISE_SCALE, z * TREE_NOISE_SCALE);
+                    
+                    if (treeNoise > TREE_THRESHOLD) { 
+                        generateTreeData(data, x, z, height);
                     }
                 }
             }
             
-            // Rendu de TOUS les chunks après la génération des données
-            let totalBlocks = 0;
-            for (const key in chunkData) {
-                renderChunk(key);
-                totalBlocks += Object.keys(chunkData[key]).length;
+            return data;
+        }
+        
+        /**
+         * Supprime un chunk de la scène et des structures de données (déchargement).
+         */
+        function unloadChunk(chunkKey) {
+            if (chunkMeshes[chunkKey]) {
+                const meshGroup = chunkMeshes[chunkKey];
+                scene.remove(meshGroup);
+                
+                meshGroup.traverse(object => {
+                    if (object.isMesh) {
+                        object.geometry.dispose();
+                        if (Array.isArray(object.material)) {
+                            object.material.forEach(m => m.dispose());
+                        } else {
+                            object.material.dispose();
+                        }
+                    }
+                });
+                
+                delete chunkMeshes[chunkKey];
+                delete chunkData[chunkKey]; // Suppression des données locales
+            }
+        }
+        
+        /**
+         * Gère le chargement et le déchargement des chunks autour du joueur via onSnapshot.
+         */
+        function updateActiveChunks(isInitialSpawn = false) {
+            if (!db) return; // Attendre l'initialisation de Firebase
+
+            const playerChunkKey = getCurrentPlayerChunkKey();
+            const [pCX, pCZ] = playerChunkKey.split(',').map(Number);
+            
+            const requiredChunks = new Set();
+            const R = RENDER_RADIUS;
+
+            // 1. Déterminer les chunks requis et initialiser les écouteurs (listeners)
+            for (let cX = pCX - R; cX <= pCX + R; cX++) {
+                for (let cZ = pCZ - R; cZ <= pCZ + R; cZ++) {
+                    const key = `${cX},${cZ}`;
+                    requiredChunks.add(key);
+                    
+                    // S'assurer que le groupe Mesh existe
+                    if (!chunkMeshes[key]) {
+                         chunkMeshes[key] = new THREE.Group();
+                         chunkMeshes[key].name = `Chunk-${key}`;
+                         scene.add(chunkMeshes[key]);
+                    }
+
+                    if (!activeListeners[key]) {
+                        // Configurer un nouvel écouteur onSnapshot
+                        const docRef = getChunkDocRef(key);
+                        if (!docRef) continue; 
+                        
+                        const unsubscribe = firebaseImports.onSnapshot(docRef, async (docSnapshot) => {
+                            if (docSnapshot.exists()) {
+                                // A. Chargement depuis Firestore
+                                try {
+                                    const serializedData = docSnapshot.data().blocks;
+                                    // Utilisation de JSON.parse pour désérialiser
+                                    const blocks = JSON.parse(serializedData); 
+                                    
+                                    chunkData[key] = blocks;
+                                    renderChunk(key);
+                                    console.log(`[FIREBASE] Chunk ${key} chargé (existe).`);
+
+                                } catch (e) {
+                                    console.error(`Erreur de désérialisation du chunk ${key}:`, e);
+                                }
+                            } else {
+                                // B. Le chunk n'existe pas -> Génération procédurale et sauvegarde
+                                if (!chunkData[key]) {
+                                    console.log(`[FIREBASE] Chunk ${key} généré procéduralement et sauvegardé.`);
+                                    // Générer les données localement
+                                    const generatedData = generateProceduralChunkData(cX, cZ); 
+                                    chunkData[key] = generatedData;
+                                    
+                                    // Sauvegarder dans Firestore
+                                    const serializedData = JSON.stringify(generatedData);
+                                    // setDoc crée le document avec la donnée de génération
+                                    await firebaseImports.setDoc(docRef, { blocks: serializedData, generated_by: userId }, { merge: false });
+                                    
+                                    // Le re-rendu sera fait par le onSnapshot qui va se redéclenchez.
+                                    // Cependant, on le fait ici pour plus de réactivité.
+                                    renderChunk(key);
+                                }
+                            }
+                            
+                            // C. Initialisation de la position du joueur après le premier chargement de chunk
+                            if (isInitialSpawn && !initialSpawnSet && playerChunkKey === key) {
+                                 const terrainY = getTerrainHeight(0, 0); 
+                                 playerGroup.position.y = (terrainY + 1) + PLAYER_HEIGHT;
+                                 initialSpawnSet = true;
+                            }
+                        }, (error) => {
+                            console.error(`Error listening to chunk ${key}:`, error);
+                        });
+                        
+                        activeListeners[key] = unsubscribe;
+                    }
+                }
+            }
+            
+            // 2. Nettoyer les écouteurs des chunks hors de portée
+            for (const key in activeListeners) {
+                if (!requiredChunks.has(key)) {
+                    activeListeners[key](); // Désabonnement
+                    unloadChunk(key); // Déchargement local
+                    delete activeListeners[key];
+                }
             }
 
-            console.log("Monde généré avec", totalBlocks, "blocs de données, répartis en", Object.keys(chunkData).length, "chunks.");
+            // 3. Mise à jour des maillages adjacents (pour la cohérence des frontières)
+            if (playerChunkKey !== lastChunkKey) {
+                const [oldCX, oldCZ] = lastChunkKey.split(',').map(Number);
+                const keysToUpdate = new Set();
+                
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dz = -1; dz <= 1; dz++) {
+                        keysToUpdate.add(`${pCX + dx},${pCZ + dz}`);
+                        keysToUpdate.add(`${oldCX + dx},${oldCZ + dz}`);
+                    }
+                }
+                
+                keysToUpdate.forEach(key => {
+                    if(chunkData[key]) {
+                        renderChunk(key);
+                    }
+                });
+                
+                lastChunkKey = playerChunkKey;
+            }
         }
 
 
@@ -795,10 +983,11 @@
             const chunk = chunkData[chunkKey];
             const chunkGroup = chunkMeshes[chunkKey];
             
+            if (!chunk || !chunkGroup) return;
+
             // 1. Nettoyage du groupe de meshes existantes pour ce chunk
             chunkGroup.clear();
 
-            // NOUVEAU: Inclure les types de blocs d'arbre dans la fusion
             const tempFaceGeometries = { 'grass': [], 'dirt': [], 'rock': [], 'wood': [], 'leaves': [] };
 
             // 2. Parcourir les données UNIQUEMENT dans ce chunk
@@ -919,7 +1108,6 @@
         function onKeyDown(event) {
             const key = event.key.toLowerCase();
             
-            // Gestion des touches numériques pour l'inventaire (1 à 5)
             const numKey = parseInt(key);
             if (numKey >= 1 && numKey <= 5) {
                 selectBlockByIndex(numKey);
@@ -992,10 +1180,8 @@
             pointer.set(0, 0); 
             raycaster.setFromCamera(pointer, camera);
 
-            // Filtrer les enfants qui sont des groupes de chunks
             const chunkGroups = scene.children.filter(obj => obj.name && obj.name.startsWith('Chunk-'));
 
-            // Utiliser le groupe de chunks pour l'intersection
             const intersects = raycaster.intersectObjects(chunkGroups.flatMap(g => g.children), false);
 
             if (intersects.length > 0 && intersects[0].distance < MAX_REACH_DISTANCE) {
@@ -1008,10 +1194,8 @@
          * Récupère les coordonnées du bloc (x, y, z) à partir d'un résultat de raycast
          */
         function getBlockCoordsFromRaycast(intersect) {
-            // Utiliser le point d'intersection, mais décalé très légèrement vers l'intérieur du bloc pour s'assurer que nous touchons le bon bloc
             const pointInBlock = intersect.point.clone().sub(intersect.face.normal.clone().multiplyScalar(0.001));
             
-            // Les coordonnées de Three.js sont centrées sur les voxels. On utilise Math.round pour l'axe x et z, et Math.floor pour y (les blocs sont empilés à des coordonnées entières)
             return {
                 x: Math.round(pointInBlock.x), 
                 y: Math.floor(pointInBlock.y), 
@@ -1073,7 +1257,7 @@
             const pY = playerGroup.position.y - PLAYER_HEIGHT; // Hauteur des pieds
             const pZ = playerGroup.position.z;
 
-            // MIS À JOUR : Affichage minimaliste (X Y Z)
+            // Affichage minimaliste (X Y Z)
             const coordsText = `${Math.round(pX)} ${Math.round(pY + 1)} ${Math.round(pZ)}`;
             document.getElementById('coordsIndicator').innerText = coordsText;
         }
@@ -1204,7 +1388,15 @@
             
             updatePlayerMovement(); 
             updateFPS(now); 
-            updateCoordinatesUI(); // Mise à jour des coordonnées
+            updateCoordinatesUI(); 
+            
+            if (pointerLocked) {
+                chunkUpdateCounter++;
+                if (chunkUpdateCounter >= CHUNK_UPDATE_INTERVAL) {
+                    updateActiveChunks();
+                    chunkUpdateCounter = 0;
+                }
+            }
 
             renderer.render(scene, camera);
         }
