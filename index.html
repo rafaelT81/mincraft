@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu Voxel 3D - Étape 29 (Portée du Joueur à 7)</title>
+    <title>Jeu Voxel 3D - Étape 32 (Collision Glissante Corrigée)</title>
     <!-- Chargement de la bibliothèque Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Outil nécessaire pour fusionner les géométries (performance) -->
@@ -156,9 +156,9 @@
         const textures = {}; // Contiendra les objets THREE.Texture (clé: URL du fichier)
 
         // Configuration du joueur/caméra
-        const PLAYER_HEIGHT = 2.0; 
+        const PLAYER_HEIGHT = 1.6; // Hauteur du joueur (réduite à 1.6)
+        const PLAYER_HORIZONTAL_INSET = 0.3; // Distance minimale du centre du joueur au mur (0.3)
         const PLAYER_SPEED = 0.12; 
-        // Portée maximale définie à 7 unités.
         const MAX_REACH_DISTANCE = 7; 
         
         // Variables de Physique
@@ -247,16 +247,35 @@
             }
 
             // 2. Vérifier que le joueur ne se place pas lui-même dans le bloc
-            const pX = Math.round(playerGroup.position.x);
-            const pZ = Math.round(playerGroup.position.z);
+            const pX = playerGroup.position.x;
+            const pZ = playerGroup.position.z;
             const pY = playerGroup.position.y;
             
-            // Les deux blocs Y occupés par le joueur
-            const playerBlockY1 = Math.floor(pY - PLAYER_HEIGHT + 0.1); 
-            const playerBlockY2 = Math.floor(pY - PLAYER_HEIGHT + 1.1); 
+            // Déterminer les deux blocs Y occupés par le joueur (tête et corps)
+            const blockY1 = Math.floor(pY - PLAYER_HEIGHT + 0.1); 
+            const blockY2 = Math.floor(pY - PLAYER_HEIGHT + 1.1); 
+
+            // Calculer la boîte de collision du joueur (AABB)
+            const playerMinX = pX - 0.5 + PLAYER_HORIZONTAL_INSET;
+            const playerMaxX = pX + 0.5 - PLAYER_HORIZONTAL_INSET;
+            const playerMinZ = pZ - 0.5 + PLAYER_HORIZONTAL_INSET;
+            const playerMaxZ = pZ + 0.5 - PLAYER_HORIZONTAL_INSET;
+
+            // Boîte du nouveau bloc
+            const blockMinX = x - 0.5;
+            const blockMaxX = x + 0.5;
+            const blockMinZ = z - 0.5;
+            const blockMaxZ = z + 0.5;
+
+            // Collision AABB (Axis-Aligned Bounding Box) pour X et Z
+            const collidesHorizontally = playerMinX < blockMaxX && playerMaxX > blockMinX &&
+                                         playerMinZ < blockMaxZ && playerMaxZ > blockMinZ;
             
-            if (x === pX && z === pZ && (y === playerBlockY1 || y === playerBlockY2)) {
-                console.log(`IMPOSSIBLE DE PLACER (Self-Block): Le bloc à (${x}, ${y}, ${z}) est occupé par le joueur.`);
+            // Collision verticale (si le nouveau bloc est au niveau du corps/tête du joueur)
+            const collidesVertically = (y === blockY1 || y === blockY2);
+            
+            if (collidesHorizontally && collidesVertically) {
+                console.log(`IMPOSSIBLE DE PLACER (Self-Block): Le bloc à (${x}, ${y}, ${z}) chevauche l'espace du joueur.`);
                 return;
             }
 
@@ -308,6 +327,8 @@
             uniqueUrls.forEach(url => {
                 if (!textures[url]) {
                     const promise = new Promise((resolve, reject) => {
+                        // NOTE: Si les fichiers de texture (grass.png, dirt.png, rock.png) ne sont pas présents
+                        // dans le même dossier que ce fichier HTML, le chargement échouera.
                         loader.load(
                             url,
                             (texture) => {
@@ -322,7 +343,7 @@
                             undefined, // onProgress
                             (error) => {
                                 // GESTION D'ERREUR : Utiliser un fallback au lieu de planter
-                                console.error(`[ERREUR DE TEXTURE] Impossible de charger la texture : ${url}. VEUILLEZ VÉRIFIER LE NOM DU FICHIER ET SON EMPLACEMENT (il doit être dans le même dossier).`, error);
+                                console.error(`[ERREUR DE TEXTURE] Impossible de charger la texture : ${url}. VEUILLEZ VÉRIFIER LE NOM DU FICHIER ET SON EMPLACEMENT.`, error);
                                 textures[url] = 'error_fallback'; // Marqueur pour indiquer un échec de chargement
                                 resolve(); // Résoudre la promesse pour ne pas bloquer Promise.all
                             }
@@ -396,10 +417,9 @@
             // Taille de la zone de départ réduite à 16x16 (pour simuler des chunks plus petits)
             generateChunk(0, 0, 16); 
             
-            // --- CORRECTION DU SPAWN (Assuré depuis l'étape précédente) ---
+            // --- CORRECTION DU SPAWN ---
             // Utiliser la fonction de génération de hauteur au point (0, 0)
             const terrainY = getTerrainHeight(0, 0); 
-            // La position des pieds doit être un bloc au-dessus du bloc de terrain (terrainY + 1)
             // La position Y du groupe du joueur est la position des pieds + la hauteur du joueur
             playerGroup.position.y = (terrainY + 1) + PLAYER_HEIGHT; 
             // ---------------------------
@@ -450,20 +470,7 @@
         }
         
         /**
-         * Vérifie si un bloc existe à la position (x, y, z) en regardant dans le 'world' de données.
-         */
-        function isBlockSolid(x, y, z) {
-            // Arrondir les coordonnées d'entrée au cas où elles seraient des flottants 
-            const key = `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
-            return world.hasOwnProperty(key);
-        }
-
-        /**
          * Crée une face (quad) de cube avec des UVs spécifiques et la fusionne dans la géométrie globale.
-         * @param {Array<THREE.BufferGeometry>} targetGeometry - La liste des géométries de face à fusionner.
-         * @param {number} x, y, z - Coordonnées mondiales du coin inférieur gauche du cube.
-         * @param {string} blockType - Type du bloc ('grass', 'dirt', 'rock').
-         * @param {number} faceIndex - Indice de la face (0 à 5) selon CUBE_FACES.
          */
         function addFaceIfVisible(targetGeometry, x, y, z, blockType, faceIndex) {
             // Vérifier si le bloc voisin dans la direction de la face est solide
@@ -833,12 +840,12 @@
         }
 
         /**
-         * Applique le mouvement et la physique au joueur, incluant la collision horizontale et verticale.
+         * Applique le mouvement et la physique au joueur, incluant la collision horizontale et verticale (GLISSANTE).
          */
         function updatePlayerMovement() {
             if (!pointerLocked) return;
 
-            // --- 1. Mouvement Horizontal ---
+            // --- 1. Mouvement Horizontal (Calcul du vecteur de déplacement) ---
             const forward = new THREE.Vector3();
             playerGroup.getWorldDirection(forward); 
             forward.y = 0; 
@@ -854,7 +861,7 @@
             if (keys.d) moveVector.addScaledVector(right, -PLAYER_SPEED); // D va à Gauche
             if (keys.q) moveVector.addScaledVector(right, PLAYER_SPEED);  // Q va à Droite
             
-            // Coordonnées actuelles et cible
+            // Coordonnées actuelles 
             const currentX = playerGroup.position.x;
             const currentZ = playerGroup.position.z;
             const pY = playerGroup.position.y;
@@ -863,37 +870,68 @@
             const blockY1 = Math.floor(pY - PLAYER_HEIGHT + 0.1); 
             const blockY2 = Math.floor(pY - PLAYER_HEIGHT + 1.1); 
 
-            // --- Collision en X ---
-            const targetX = currentX + moveVector.x;
-            const targetBlockX = Math.round(targetX);
-            const currentBlockZ = Math.round(currentZ);
+            let targetX = currentX;
+            let targetZ = currentZ;
 
-            let collisionX = false;
-            if (isBlockSolid(targetBlockX, blockY1, currentBlockZ) || isBlockSolid(targetBlockX, blockY2, currentBlockZ)) {
-                if (Math.abs(moveVector.x) > 0.001 && targetBlockX !== Math.round(currentX)) {
-                    collisionX = true;
+            // Appliquer le mouvement désiré sur les coordonnées cibles
+            targetX += moveVector.x;
+            targetZ += moveVector.z;
+
+
+            // --- 1.1 Résolution de Collision en X (Sliding) ---
+            if (Math.abs(moveVector.x) > 0.001) {
+                const dirX = Math.sign(moveVector.x);
+                
+                // Le bloc X vers lequel on se dirige, avec un décalage par rapport au centre du joueur (INSET)
+                // Ceci permet de vérifier le bloc solide juste à côté de la zone de collision du joueur.
+                const blockToTestX = Math.round(targetX + dirX * (0.5 - PLAYER_HORIZONTAL_INSET)); 
+                
+                // Coordonnée Z du bloc sous le joueur (ou près de lui)
+                const checkBlockZ = Math.round(currentZ); 
+                
+                if (isBlockSolid(blockToTestX, blockY1, checkBlockZ) || isBlockSolid(blockToTestX, blockY2, checkBlockZ)) {
+                    // Collision en X détectée. Snapper à la limite X du mur.
+                    if (dirX > 0) {
+                        // Mouvement X+ : Arrêter juste avant le mur Bx.
+                        const wallX = blockToTestX - 0.5;
+                        targetX = wallX - PLAYER_HORIZONTAL_INSET;
+                    } else {
+                        // Mouvement X- : Arrêter juste après le mur Bx.
+                        const wallX = blockToTestX + 0.5;
+                        targetX = wallX + PLAYER_HORIZONTAL_INSET;
+                    }
+                    // Le mouvement en Z n'est PAS annulé, d'où l'effet de glissement.
                 }
             }
 
-            // --- Collision en Z ---
-            const targetZ = currentZ + moveVector.z;
-            const targetBlockZ = Math.round(targetZ);
-            const currentBlockX = Math.round(currentX);
-
-            let collisionZ = false;
-            if (isBlockSolid(currentBlockX, blockY1, targetBlockZ) || isBlockSolid(currentBlockX, blockY2, targetBlockZ)) {
-                if (Math.abs(moveVector.z) > 0.001 && targetBlockZ !== Math.round(currentZ)) {
-                    collisionZ = true;
+            // --- 1.2 Résolution de Collision en Z (Sliding) ---
+            if (Math.abs(moveVector.z) > 0.001) {
+                const dirZ = Math.sign(moveVector.z);
+                
+                // Le bloc Z vers lequel on se dirige, avec un décalage par rapport au centre du joueur (INSET)
+                const blockToTestZ = Math.round(targetZ + dirZ * (0.5 - PLAYER_HORIZONTAL_INSET)); 
+                
+                // Coordonnée X du bloc sous le joueur, en utilisant la targetX (qui peut avoir été corrigée)
+                const checkBlockX = Math.round(targetX); 
+                
+                if (isBlockSolid(checkBlockX, blockY1, blockToTestZ) || isBlockSolid(checkBlockX, blockY2, blockToTestZ)) {
+                    // Collision en Z détectée. Snapper à la limite Z du mur.
+                    if (dirZ > 0) {
+                        // Mouvement Z+ : Arrêter juste avant le mur Bz.
+                        const wallZ = blockToTestZ - 0.5;
+                        targetZ = wallZ - PLAYER_HORIZONTAL_INSET;
+                    } else {
+                        // Mouvement Z- : Arrêter juste après le mur Bz.
+                        const wallZ = blockToTestZ + 0.5;
+                        targetZ = wallZ + PLAYER_HORIZONTAL_INSET;
+                    }
+                    // Le mouvement en X (corrigé ou non) est préservé.
                 }
             }
-
-            // Appliquer le mouvement horizontal
-            if (!collisionX) {
-                playerGroup.position.x = targetX;
-            }
-            if (!collisionZ) {
-                playerGroup.position.z = targetZ;
-            }
+            
+            // Appliquer les positions finales (corrigées ou non)
+            playerGroup.position.x = targetX;
+            playerGroup.position.z = targetZ;
 
 
             // --- 2. Mouvement Vertical (Gravité, Saut et Collisions) ---
@@ -901,15 +939,15 @@
             velocityY += GRAVITY;
             playerGroup.position.y += velocityY;
 
-            // Mettre à jour les blocs Y après le mouvement vertical
+            // Mettre à jour les blocs X et Z après le mouvement horizontal
+            const finalPX = Math.round(playerGroup.position.x);
+            const finalPZ = Math.round(playerGroup.position.z);
             const newPY = playerGroup.position.y;
-            const pX = Math.round(playerGroup.position.x);
-            const pZ = Math.round(playerGroup.position.z);
             const newBlockY2 = Math.floor(newPY - PLAYER_HEIGHT + 1.1); // Le bloc occupé par la tête
 
             // A. Collision avec le Plafond (Ceiling) - Ne vérifie que si on monte (velocityY > 0)
             if (velocityY > 0) { 
-                if (isBlockSolid(pX, newBlockY2, pZ)) {
+                if (isBlockSolid(finalPX, newBlockY2, finalPZ)) {
                     // La tête frappe le bloc
                     
                     // Positionner le joueur juste sous le bloc frappé
