@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu Voxel 3D - Étape 32 (Collision Glissante Corrigée)</title>
+    <title>Jeu Voxel 3D - Seed et Perlin Noise</title>
     <!-- Chargement de la bibliothèque Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Outil nécessaire pour fusionner les géométries (performance) -->
@@ -48,17 +48,30 @@
             color: white;
             font-family: sans-serif;
         }
-        #fpsIndicator {
+        
+        /* Conteneur des indicateurs (FPS et Coordonnées) */
+        #statusIndicators {
             position: fixed;
             top: 10px;
             left: 10px;
+            z-index: 100;
+            font-family: monospace;
             color: white;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
+        }
+
+        #fpsIndicator, #coordsIndicator {
             background-color: rgba(0, 0, 0, 0.5);
             padding: 5px 10px;
             border-radius: 5px;
-            font-family: monospace;
-            z-index: 100;
+            margin-bottom: 5px; /* Espace entre FPS et Coords */
         }
+        
+        /* MIS À JOUR: L'indicateur de coordonnées est maintenant minimaliste */
+        #coordsIndicator {
+            padding: 5px 10px;
+        }
+
 
         /* Réticule (Crosshair) */
         #crosshair {
@@ -107,6 +120,20 @@
             border-color: gold; /* Indiquer le bloc sélectionné */
             transform: scale(1.1);
         }
+        
+        /* Indicateur de graine */
+        #seedIndicator {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            z-index: 100;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
@@ -117,7 +144,14 @@
             Clic Gauche : Casser | Clic Droit : Placer
         </div>
     </div>
-    <div id="fpsIndicator">FPS: --</div>
+    
+    <div id="statusIndicators">
+        <div id="fpsIndicator">FPS: --</div>
+        <!-- Coordonnées minimalistes (X Y Z) -->
+        <div id="coordsIndicator">-- -- --</div>
+    </div>
+
+    <div id="seedIndicator">Seed: <span id="currentSeed"></span></div>
     <div id="crosshair"></div>
     
     <!-- Interface d'inventaire -->
@@ -125,15 +159,97 @@
         <div class="slot selected" data-block-type="grass">Herbe (1)</div>
         <div class="slot" data-block-type="dirt">Terre (2)</div>
         <div class="slot" data-block-type="rock">Roche (3)</div>
+        <!-- Nouveaux Blocs dans l'inventaire pour le test -->
+        <div class="slot" data-block-type="wood">Bois (4)</div>
+        <div class="slot" data-block-type="leaves">Feuilles (5)</div>
     </div>
 
     <script>
-        // Variables globales pour le moteur 3D
-        let scene, camera, renderer, playerGroup;
-        let world = {}; // Stocke les DONNÉES des blocs (position, type)
-        const chunkMeshes = {}; // Objets 3D regroupés par type de bloc (performance)
         
-        // Raycasting pour l'interaction
+        // --- 0. Générateur de Bruit de Perlin Simplex (Simple Implémentation) ---
+        // Utilisé pour générer des reliefs organiques et fluides basés sur une graine (seed)
+
+        const PerlinNoise = (function() {
+            let p = new Uint8Array(512);
+            let permutation = [];
+            
+            // Fonction interne d'initialisation du tableau de permutation
+            function initPermutation(seed) {
+                // Fonction de hachage simple pour la graine (seed)
+                let rng = new (function() {
+                    let s = seed || Date.now();
+                    this.next = function() {
+                        s = (s * 9301 + 49297) % 233280;
+                        return s / 233280;
+                    };
+                })();
+
+                permutation = Array.from({ length: 256 }, (_, i) => i);
+
+                // Mélange de Fisher-Yates (Shuffle)
+                for (let i = 255; i > 0; i--) {
+                    const j = Math.floor(rng.next() * (i + 1));
+                    [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
+                }
+                
+                // Dupliquer le tableau pour éviter les vérifications de débordement
+                for (let i = 0; i < 256; i++) {
+                    p[i] = p[i + 256] = permutation[i];
+                }
+            }
+            
+            function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+            function lerp(t, a, b) { return a + t * (b - a); }
+            function grad(hash, x, y, z) {
+                let h = hash & 15;
+                let u = h < 8 ? x : y;
+                let v = h < 4 ? y : h == 12 || h == 14 ? x : z;
+                return ((h&1) == 0 ? u : -u) + ((h&2) == 0 ? v : -v);
+            }
+
+            function noise(x, y, z) {
+                let X = Math.floor(x) & 255;
+                let Y = Math.floor(y) & 255;
+                let Z = Math.floor(z) & 255;
+
+                x -= Math.floor(x);
+                y -= Math.floor(y);
+                z -= Math.floor(z);
+
+                let u = fade(x);
+                let v = fade(y);
+                let w = fade(z);
+
+                let A = p[X] + Y;
+                let AA = p[A] + Z;
+                let AB = p[A + 1] + Z;
+                let B = p[X + 1] + Y;
+                let BA = p[B] + Z;
+                let BB = p[B + 1] + Z;
+
+                return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),
+                                                  grad(p[BA], x - 1, y, z)),
+                                      lerp(u, grad(p[AB], x, y - 1, z),
+                                                  grad(p[BB], x - 1, y - 1, z))),
+                            lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),
+                                                  grad(p[BA + 1], x - 1, y, z - 1)),
+                                      lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
+                                                  grad(p[BB + 1], x - 1, y - 1, z - 1))));
+            }
+            
+            return {
+                init: initPermutation, // Exposer la fonction d'initialisation de la graine
+                noise: noise
+            };
+        })();
+
+        // --- 1. Variables Globales ---
+        
+        let scene, camera, renderer, playerGroup;
+        const chunkData = {}; 
+        const chunkMeshes = {}; 
+        
+        // Raycasting
         const raycaster = new THREE.Raycaster();
         const pointer = new THREE.Vector2();
         
@@ -141,23 +257,36 @@
         const inventory = {
             'grass': { count: 999 },
             'dirt': { count: 999 },
-            'rock': { count: 999 }
+            'rock': { count: 999 },
+            'wood': { count: 999 }, // NOUVEAU
+            'leaves': { count: 999 } // NOUVEAU
         };
-        let selectedBlockType = 'grass'; // Le bloc actuellement sélectionné pour la pose
+        let selectedBlockType = 'grass'; 
         
-        // --- DÉFINITIONS DE TEXTURES AVEC NOMS DE FICHIERS LOCAUX ---
+        // Configuration de la Génération du Monde
+        const CHUNK_SIZE = 5; // Taille de chunk 
+        const CHUNK_COUNT = 10; // Nombre de chunks par axe (Total: 100 chunks)
+        const WORLD_SIZE = CHUNK_SIZE * CHUNK_COUNT; // 50x50 blocs
+        const WORLD_HALF_SIZE = WORLD_SIZE / 2; // 25
+        
+        // Graine du Monde (Seed)
+        const WORLD_SEED = 12345; // Graine statique pour la reproductibilité
+
+        // MISE À JOUR : Ajout de wood.png et leave.png
         const BLOCK_TEXTURES_URL = {
             grass: { url: 'grass.png', top: [0, 1], bottom: [0, 0], side: [1, 1] }, 
             dirt: { url: 'dirt.png', all: [0, 0] },
-            rock: { url: 'rock.png', all: [1, 1] }
+            rock: { url: 'rock.png', all: [1, 1] },
+            wood: { url: 'wood.png', top: [0, 1], bottom: [0, 1], side: [1, 1] }, // Tronc: texture différente pour les côtés vs haut/bas
+            leaves: { url: 'leave.png', all: [0, 1] } // Feuilles: texture uniforme
         };
 
-        const materials = {}; // Contiendra les objets THREE.MeshLambertMaterial (avec maps)
-        const textures = {}; // Contiendra les objets THREE.Texture (clé: URL du fichier)
+        const materials = {}; 
+        const textures = {}; 
 
         // Configuration du joueur/caméra
-        const PLAYER_HEIGHT = 1.6; // Hauteur du joueur (réduite à 1.6)
-        const PLAYER_HORIZONTAL_INSET = 0.3; // Distance minimale du centre du joueur au mur (0.3)
+        const PLAYER_HEIGHT = 1.6; 
+        const PLAYER_HORIZONTAL_INSET = 0.3; 
         const PLAYER_SPEED = 0.12; 
         const MAX_REACH_DISTANCE = 7; 
         
@@ -167,30 +296,36 @@
         const JUMP_POWER = 0.35; 
         let onGround = false; 
 
-        // État des touches pour le mouvement
+        // État des touches pour le mouvement (ZQSD + Espace + 1-5 pour inventaire)
         const keys = {
             z: false, q: false, s: false, d: false,
-            ' ': false, // Espace pour sauter
-            '1': false, '2': false, '3': false, 
+            ' ': false, 
+            '1': false, '2': 'false', '3': false, '4': false, '5': false // NOUVEAU
         };
 
-        // Définition des 6 faces d'un cube et de leurs directions relatives (pour le culling)
         const CUBE_FACES = [
-            { dir: [ 0, 0,  1], uv: 4 }, // Front (z+) - Indice 4 de la BoxGeometry
-            { dir: [ 0, 0, -1], uv: 5 }, // Back (z-) - Indice 5
-            { dir: [ 1, 0,  0], uv: 0 }, // Right (x+) - Indice 0
-            { dir: [-1, 0,  0], uv: 1 }, // Left (x-) - Indice 1
-            { dir: [ 0, 1,  0], uv: 2 }, // Top (y+) - Indice 2
-            { dir: [ 0, -1, 0], uv: 3 }, // Bottom (y-) - Indice 3
+            { dir: [ 0, 0,  1], uv: 4 }, // Front (z+)
+            { dir: [ 0, 0, -1], uv: 5 }, // Back (z-)
+            { dir: [ 1, 0,  0], uv: 0 }, // Right (x+)
+            { dir: [-1, 0,  0], uv: 1 }, // Left (x-)
+            { dir: [ 0, 1,  0], uv: 2 }, // Top (y+)
+            { dir: [ 0, -1, 0], uv: 3 }, // Bottom (y-)
         ];
         
-        // État du verrouillage du pointeur
         let pointerLocked = false;
         
         // Variables pour le calcul des FPS
         let lastTime = 0;
         let frameCount = 0;
         let fps = 0;
+        
+        // --- NOUVELLE FONCTION: Trouver le Chunk à partir des coordonnées mondiales ---
+        function getChunkKey(x, z) {
+            // Déterminer les coordonnées du chunk
+            const chunkX = Math.floor(x / CHUNK_SIZE);
+            const chunkZ = Math.floor(z / CHUNK_SIZE);
+            return `${chunkX},${chunkZ}`;
+        }
 
         // --- Fonctions d'Interaction avec le Monde ---
         
@@ -198,19 +333,75 @@
          * Met à jour le monde de données et l'affichage 3D.
          */
         function updateWorld(x, y, z, newType = null) {
-            const key = `${x},${y},${z}`;
-            
-            if (newType) {
-                // Placer un bloc
-                world[key] = { x, y, z, type: newType };
-            } else {
-                // Casser un bloc
-                delete world[key];
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = `${x},${y},${z}`;
+
+            if (!chunkData[chunkKey]) {
+                // Si le chunk n'existe pas, il n'y a pas de mesh à mettre à jour, ou le bloc est hors du monde généré.
+                // Lors de la pose d'un bloc en dehors de la zone générée, on ne fait rien pour l'instant
+                return;
             }
 
-            // Re-fusionner et re-rendre toutes les géométries
-            renderMergedChunk();
+            if (newType) {
+                chunkData[chunkKey][blockKey] = { x, y, z, type: newType };
+            } else {
+                delete chunkData[chunkKey][blockKey];
+            }
+
+            // --- 1. MISE À JOUR CIBLÉE DU CHUNK d'origine ---
+            renderChunk(chunkKey);
+
+            // --- 2. Vérification et Mise à Jour des CHUNKS VOISINS si le bloc est sur une bordure ---
+            
+            const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
+            // Calcul de la position locale du bloc dans son chunk (0 à CHUNK_SIZE - 1)
+            // On utilise le modulo pour les coordonnées locales, en s'assurant qu'il est positif.
+            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE; 
+            const localZ = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+
+            // Si le bloc est sur une des 4 frontières
+            if (localX === 0 || localX === CHUNK_SIZE - 1 || 
+                localZ === 0 || localZ === CHUNK_SIZE - 1) 
+            {
+                const neighborKeys = getNeighborChunkKeys(x, z);
+                neighborKeys.forEach(key => renderChunk(key));
+            }
         }
+        
+        /**
+         * Retourne les clés des chunks voisins (jusqu'à 4) qui doivent être re-rendus.
+         */
+        function getNeighborChunkKeys(x, z) {
+            const keys = new Set();
+            const chunkX = Math.floor(x / CHUNK_SIZE);
+            const chunkZ = Math.floor(z / CHUNK_SIZE);
+
+            // Calcul de la position locale du bloc (0 à CHUNK_SIZE - 1)
+            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+            const localZ = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+            
+            // Si le bloc est sur la bordure X- (localX = 0)
+            if (localX === 0) {
+                keys.add(`${chunkX - 1},${chunkZ}`);
+            }
+            // Si le bloc est sur la bordure X+ (localX = CHUNK_SIZE - 1)
+            if (localX === CHUNK_SIZE - 1) {
+                keys.add(`${chunkX + 1},${chunkZ}`);
+            }
+            
+            // Si le bloc est sur la bordure Z- (localZ = 0)
+            if (localZ === 0) {
+                keys.add(`${chunkX},${chunkZ - 1}`);
+            }
+            // Si le bloc est sur la bordure Z+ (localZ = CHUNK_SIZE - 1)
+            if (localZ === CHUNK_SIZE - 1) {
+                keys.add(`${chunkX},${chunkZ + 1}`);
+            }
+
+            // Filtrer pour ne garder que les clés de chunks qui existent dans la scène
+            return Array.from(keys).filter(key => chunkMeshes.hasOwnProperty(key));
+        }
+
 
         /**
          * Gère la destruction d'un bloc.
@@ -220,11 +411,9 @@
             
             const { x, y, z, type } = block;
             
-            // Simuler l'ajout de la ressource cassée à l'inventaire
             if (inventory[type]) {
                 inventory[type].count += 1;
-                console.log(`Bloc de ${type} cassé. Vous avez maintenant ${inventory[type].count} ${type}.`);
-                updateInventoryUI(); // Mise à jour de l'affichage
+                updateInventoryUI(); 
             }
             
             updateWorld(x, y, z, null);
@@ -236,13 +425,12 @@
         function placeBlock(x, y, z) {
             const typeToPlace = selectedBlockType;
             if (!typeToPlace || inventory[typeToPlace].count <= 0) {
-                console.log("Inventaire vide ou aucun bloc sélectionné.");
+                // console.log("Inventaire vide ou aucun bloc sélectionné.");
                 return;
             }
 
             // 1. Vérifier que l'emplacement n'est pas déjà occupé
             if (isBlockSolid(x, y, z)) {
-                 console.log(`IMPOSSIBLE DE PLACER (Occupé): Le bloc à (${x}, ${y}, ${z}) est déjà solide.`);
                  return;
             }
 
@@ -251,31 +439,25 @@
             const pZ = playerGroup.position.z;
             const pY = playerGroup.position.y;
             
-            // Déterminer les deux blocs Y occupés par le joueur (tête et corps)
             const blockY1 = Math.floor(pY - PLAYER_HEIGHT + 0.1); 
             const blockY2 = Math.floor(pY - PLAYER_HEIGHT + 1.1); 
 
-            // Calculer la boîte de collision du joueur (AABB)
             const playerMinX = pX - 0.5 + PLAYER_HORIZONTAL_INSET;
             const playerMaxX = pX + 0.5 - PLAYER_HORIZONTAL_INSET;
             const playerMinZ = pZ - 0.5 + PLAYER_HORIZONTAL_INSET;
             const playerMaxZ = pZ + 0.5 - PLAYER_HORIZONTAL_INSET;
 
-            // Boîte du nouveau bloc
             const blockMinX = x - 0.5;
             const blockMaxX = x + 0.5;
             const blockMinZ = z - 0.5;
             const blockMaxZ = z + 0.5;
 
-            // Collision AABB (Axis-Aligned Bounding Box) pour X et Z
             const collidesHorizontally = playerMinX < blockMaxX && playerMaxX > blockMinX &&
                                          playerMinZ < blockMaxZ && playerMaxZ > blockMinZ;
             
-            // Collision verticale (si le nouveau bloc est au niveau du corps/tête du joueur)
             const collidesVertically = (y === blockY1 || y === blockY2);
             
             if (collidesHorizontally && collidesVertically) {
-                console.log(`IMPOSSIBLE DE PLACER (Self-Block): Le bloc à (${x}, ${y}, ${z}) chevauche l'espace du joueur.`);
                 return;
             }
 
@@ -283,42 +465,48 @@
             inventory[typeToPlace].count -= 1;
             
             updateWorld(x, y, z, typeToPlace);
-            updateInventoryUI(); // Mise à jour de l'affichage
+            updateInventoryUI(); 
         }
 
-        // --- Fonctions de Génération Procédurale ---
+        // --- Fonctions de Génération Procédurale (avec Perlin Noise) ---
+        
+        const TERRAIN_SCALE = 0.05; // Finesse du détail (plus petit = plus lisse)
+        const TERRAIN_AMPLITUDE = 10; // Hauteur maximale des pics
 
+        /**
+         * Calcule la hauteur du terrain à la position (x, z) en utilisant le bruit de Perlin.
+         */
         function getTerrainHeight(x, z) {
-            const scale = 0.1; 
-            const amplitude = 5; 
+            // Utiliser la fonction de bruit 3D (Z est constant ici)
+            const noiseValue = PerlinNoise.noise(x * TERRAIN_SCALE, z * TERRAIN_SCALE, 0); 
+            
+            // Le bruit de Perlin renvoie une valeur entre -1 et 1.
+            // On la mappe à une hauteur entre 0 et TERRAIN_AMPLITUDE (ajusté pour être au-dessus de y=-10)
+            const height = (noiseValue + 1) * 0.5 * TERRAIN_AMPLITUDE; 
 
-            const h1 = Math.sin(x * scale) * amplitude * 0.7;
-            const h2 = Math.cos(z * scale * 0.9) * amplitude * 0.8;
-            const h3 = Math.sin(x * scale * 0.3 + z * scale * 0.2) * amplitude * 0.5;
-
-            return Math.floor((h1 + h2 + h3) / 2.5);
+            // Retourner une hauteur entière (pour les blocs)
+            return Math.floor(height);
         }
         
         /**
-         * Vérifie si un bloc existe à la position (x, y, z) en regardant dans le 'world' de données.
+         * Vérifie si un bloc existe à la position (x, y, z).
          */
         function isBlockSolid(x, y, z) {
-            // Arrondir les coordonnées d'entrée au cas où elles seraient des flottants 
-            const key = `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
-            return world.hasOwnProperty(key);
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
+            
+            return chunkData[chunkKey] && chunkData[chunkKey].hasOwnProperty(blockKey);
         }
 
         // --- Fonctions d'Initialisation ---
         
         /**
-         * Charge toutes les textures nécessaires pour les blocs.
-         * @returns {Promise<void>}
+         * Charge toutes les textures nécessaires.
          */
         function loadTextures() {
             const loader = new THREE.TextureLoader();
             const promises = [];
             
-            // Collecter les URL uniques de texture à charger
             const uniqueUrls = new Set();
             for (const type in BLOCK_TEXTURES_URL) {
                 uniqueUrls.add(BLOCK_TEXTURES_URL[type].url);
@@ -327,25 +515,22 @@
             uniqueUrls.forEach(url => {
                 if (!textures[url]) {
                     const promise = new Promise((resolve, reject) => {
-                        // NOTE: Si les fichiers de texture (grass.png, dirt.png, rock.png) ne sont pas présents
-                        // dans le même dossier que ce fichier HTML, le chargement échouera.
                         loader.load(
                             url,
                             (texture) => {
-                                // Important : Définir le mode de répétition et le filtrage
                                 texture.wrapS = THREE.RepeatWrapping;
                                 texture.wrapT = THREE.RepeatWrapping;
-                                texture.magFilter = THREE.NearestFilter; // Pour un look pixelisé
+                                texture.magFilter = THREE.NearestFilter; 
                                 texture.minFilter = THREE.NearestMipmapLinearFilter;
-                                textures[url] = texture; // Stocker la texture par son URL
+                                textures[url] = texture; 
                                 resolve();
                             },
-                            undefined, // onProgress
+                            undefined,
                             (error) => {
-                                // GESTION D'ERREUR : Utiliser un fallback au lieu de planter
-                                console.error(`[ERREUR DE TEXTURE] Impossible de charger la texture : ${url}. VEUILLEZ VÉRIFIER LE NOM DU FICHIER ET SON EMPLACEMENT.`, error);
-                                textures[url] = 'error_fallback'; // Marqueur pour indiquer un échec de chargement
-                                resolve(); // Résoudre la promesse pour ne pas bloquer Promise.all
+                                // Fallback pour les textures non trouvées (wood.png et leave.png)
+                                console.warn(`[ATTENTION TEXTURE] La texture : ${url} n'a pas pu être chargée. Utilisation d'un repli coloré.`);
+                                textures[url] = 'error_fallback'; 
+                                resolve(); 
                             }
                         );
                     });
@@ -356,22 +541,24 @@
         }
 
         function initMaterials() {
-            // Matériau de repli (gris) utilisé si une texture locale ne peut pas être chargée
-            const fallbackMaterial = new THREE.MeshLambertMaterial({ color: 0xcccccc }); 
+            const fallbackColors = {
+                'grass': 0x4CAF50,
+                'dirt': 0x795548,
+                'rock': 0x9E9E9E,
+                'wood': 0x8D6E63, // Couleur de repli pour le bois
+                'leaves': 0x8BC34A // Couleur de repli pour les feuilles
+            };
 
-            // Créer un matériau par type de bloc, en utilisant la texture partagée si possible.
             for (const type in BLOCK_TEXTURES_URL) {
                 const config = BLOCK_TEXTURES_URL[type];
                 const texture = textures[config.url];
 
                 let material;
 
-                // Si le chargement a échoué (marqué par 'error_fallback') ou si la texture est manquante
                 if (texture === 'error_fallback' || !texture) {
-                    console.warn(`[ATTENTION] Utilisation du matériau de repli pour le type ${type} car la texture '${config.url}' n'a pas pu être chargée.`);
-                    material = fallbackMaterial;
+                    // Utiliser la couleur de repli spécifique au type
+                    material = new THREE.MeshLambertMaterial({ color: fallbackColors[type] || 0xcccccc });
                 } else {
-                    // Créer un matériau Lambert (pour un éclairage réaliste)
                     material = new THREE.MeshLambertMaterial({ map: texture });
                 }
                 
@@ -381,10 +568,14 @@
 
 
         async function init() {
+            // 0. Initialisation du bruit de Perlin avec la graine
+            PerlinNoise.init(WORLD_SEED);
+            document.getElementById('currentSeed').innerText = WORLD_SEED;
+            
             // 1. Chargement des textures
             await loadTextures();
             
-            // 2. Initialisation des matériaux après le chargement des textures
+            // 2. Initialisation des matériaux
             initMaterials();
             
             // 3. SCÈNE
@@ -414,15 +605,11 @@
             scene.add(directionalLight);
 
             // 7. CRÉATION DU MONDE GÉNÉRÉ
-            // Taille de la zone de départ réduite à 16x16 (pour simuler des chunks plus petits)
-            generateChunk(0, 0, 16); 
+            generateWorld(); 
             
-            // --- CORRECTION DU SPAWN ---
-            // Utiliser la fonction de génération de hauteur au point (0, 0)
+            // CORRECTION DU SPAWN: Le joueur apparaît au centre du monde (0, 0)
             const terrainY = getTerrainHeight(0, 0); 
-            // La position Y du groupe du joueur est la position des pieds + la hauteur du joueur
             playerGroup.position.y = (terrainY + 1) + PLAYER_HEIGHT; 
-            // ---------------------------
             
             // 8. GESTION DES ÉVÉNEMENTS
             setupEventListeners();
@@ -435,59 +622,121 @@
         }
 
         /**
-         * Enregistre simplement le bloc dans la structure de données 'world'.
+         * Enregistre le bloc dans la structure de données de chunk appropriée.
          */
         function createBlock(x, y, z, type) {
-            const key = `${x},${y},${z}`;
-            world[key] = { x, y, z, type };
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = `${x},${y},${z}`;
+
+            if (!chunkData[chunkKey]) {
+                chunkData[chunkKey] = {};
+                // Créer le groupe Three.js pour le chunk
+                chunkMeshes[chunkKey] = new THREE.Group();
+                chunkMeshes[chunkKey].name = `Chunk-${chunkKey}`;
+                scene.add(chunkMeshes[chunkKey]);
+            }
+            chunkData[chunkKey][blockKey] = { x, y, z, type };
+        }
+        
+        /**
+         * NOUVEAU: Génère un arbre simple à une position donnée.
+         */
+        function generateTree(baseX, baseZ, groundY) {
+            const trunkHeight = Math.floor(Math.random() * 2) + 4; // 4 or 5 blocks high
+            const leafHeight = 3;
+            const leafRadius = 1; // 3x3 cube total (radius 1 from center)
+
+            // 1. Générer le Tronc
+            for (let y = 0; y < trunkHeight; y++) {
+                // Le tronc commence juste au-dessus du bloc de sol (groundY + 1)
+                createBlock(baseX, groundY + 1 + y, baseZ, 'wood');
+            }
+
+            // 2. Générer le Feuillage
+            const leafBaseY = groundY + trunkHeight + 1; 
+
+            for (let dy = -1; dy < leafHeight; dy++) { // Vertical layers (-1, 0, 1) pour un meilleur positionnement
+                for (let dx = -leafRadius; dx <= leafRadius; dx++) { // X offset
+                    for (let dz = -leafRadius; dz <= leafRadius; dz++) { // Z offset
+                        
+                        const currentY = leafBaseY + dy;
+                        
+                        // Condition pour affiner la forme (ex: pas de coins sur la couche la plus basse)
+                        if (dy === -1 && Math.abs(dx) === leafRadius && Math.abs(dz) === leafRadius) {
+                            continue; 
+                        }
+                        
+                        // Si l'espace est vide, on place les feuilles
+                        if (!isBlockSolid(baseX + dx, currentY, baseZ + dz)) {
+                            createBlock(baseX + dx, currentY, baseZ + dz, 'leaves');
+                        }
+                    }
+                }
+            }
         }
 
-        /**
-         * Génère un chunk et affiche les géométries.
-         */
-        function generateChunk(startX, startZ, size) {
-            console.log(`Génération d'un chunk de ${size}x${size}...`);
-            const halfSize = size / 2;
 
-            for (let x = startX - halfSize; x < startX + halfSize; x++) {
-                for (let z = startZ - halfSize; z < startZ + halfSize; z++) {
+        /**
+         * Génère l'ensemble du monde (10x10 chunks de 5x5 blocs).
+         */
+        function generateWorld() {
+            console.log(`Génération du monde de ${CHUNK_COUNT}x${CHUNK_COUNT} chunks (${WORLD_SIZE}x${WORLD_SIZE} blocs) avec CHUNK_SIZE = ${CHUNK_SIZE}...`);
+            
+            const startX = -WORLD_HALF_SIZE;
+            const endX = WORLD_HALF_SIZE;
+            const startZ = -WORLD_HALF_SIZE;
+            const endZ = WORLD_HALF_SIZE;
+
+            for (let x = startX; x < endX; x++) {
+                for (let z = startZ; z < endZ; z++) {
                     const height = getTerrainHeight(x, z);
                     
+                    // Couche de surface
                     createBlock(x, height, z, 'grass');
                     
+                    // Sous-couche de terre
                     for (let y = height - 1; y >= height - 3; y--) {
                         createBlock(x, y, z, 'dirt');
                     }
                     
+                    // Couche de roche (profonde)
                     for (let y = height - 4; y >= -10; y--) { 
                         createBlock(x, y, z, 'rock');
+                    }
+                    
+                    // NOUVEAU: Tentative de placement d'arbre
+                    if (Math.random() < 0.01) { // 1% de chance par bloc
+                        generateTree(x, z, height);
                     }
                 }
             }
             
-            renderMergedChunk();
-            console.log("Monde généré avec", Object.keys(world).length, "blocs de données.");
+            // Rendu de TOUS les chunks après la génération des données
+            let totalBlocks = 0;
+            for (const key in chunkData) {
+                renderChunk(key);
+                totalBlocks += Object.keys(chunkData[key]).length;
+            }
+
+            console.log("Monde généré avec", totalBlocks, "blocs de données, répartis en", Object.keys(chunkData).length, "chunks.");
         }
-        
+
+
         /**
          * Crée une face (quad) de cube avec des UVs spécifiques et la fusionne dans la géométrie globale.
          */
         function addFaceIfVisible(targetGeometry, x, y, z, blockType, faceIndex) {
-            // Vérifier si le bloc voisin dans la direction de la face est solide
             const face = CUBE_FACES.find(f => f.uv === faceIndex);
             const [dx, dy, dz] = face.dir;
             
-            // Si le bloc voisin est solide, cette face est cachée. On l'ignore (culling).
+            // L'occlusion culling vérifie dans les données mondiales, y compris les chunks voisins
             if (isBlockSolid(x + dx, y + dy, z + dz)) {
                 return;
             }
 
-            // Créer une géométrie Plane pour représenter une seule face (2 triangles)
             const planeGeometry = new THREE.PlaneGeometry(1, 1);
 
             // --- 1. Rotation et Translation pour aligner le plan avec la face ---
-
-            // Déplacer et tourner le plan pour qu'il corresponde à la face spécifiée
             if (faceIndex === 0) { // Right (x+)
                 planeGeometry.rotateY(Math.PI / 2);
                 planeGeometry.translate(0.5, 0, 0);
@@ -501,7 +750,6 @@
                 planeGeometry.rotateX(Math.PI / 2);
                 planeGeometry.translate(0, -0.5, 0);
             } else if (faceIndex === 4) { // Front (z+)
-                // Aucune rotation (face par défaut du PlaneGeometry)
                 planeGeometry.translate(0, 0, 0.5);
             } else if (faceIndex === 5) { // Back (z-)
                 planeGeometry.rotateY(Math.PI);
@@ -515,13 +763,12 @@
             if (config.all) {
                 uv_coord = config.all;
             } else {
-                // Cas complexe comme l'herbe (Top, Bottom, Side)
                 if (faceIndex === 2) uv_coord = config.top;
                 else if (faceIndex === 3) uv_coord = config.bottom;
                 else uv_coord = config.side;
             }
 
-            // Coordonnées de la vignette (0.5 x 0.5)
+            // Logique de mappage UV (suppose une grille 2x2)
             const [u, v] = uv_coord;
             const uMin = u * 0.5;
             const vMin = v * 0.5;
@@ -530,76 +777,57 @@
 
             const planeUVs = planeGeometry.attributes.uv.array;
             
-            // Mise à jour des UVs de la PlaneGeometry pour correspondre à la vignette
-            planeUVs[0] = uMin; planeUVs[1] = vMax; // Coin 1
-            planeUVs[2] = uMax; planeUVs[3] = vMax; // Coin 2
-            planeUVs[4] = uMin; planeUVs[5] = vMin; // Coin 3
-            planeUVs[6] = uMax; planeUVs[7] = vMin; // Coin 4
+            planeUVs[0] = uMin; planeUVs[1] = vMax; 
+            planeUVs[2] = uMax; planeUVs[3] = vMax; 
+            planeUVs[4] = uMin; planeUVs[5] = vMin; 
+            planeUVs[6] = uMax; planeUVs[7] = vMin; 
             
             // --- 3. Translation aux coordonnées mondiales ---
-            // Décaler la face à la position correcte du bloc
             planeGeometry.translate(x, y + 0.5, z); 
 
-            // Fusionner la géométrie de cette face dans la géométrie cible
             targetGeometry.push(planeGeometry);
         }
 
         /**
-         * Construit les meshes fusionnées à partir des données du monde, AVEC CULLING.
+         * Construit les meshes fusionnées pour UN SEUL CHUNK.
          */
-        function renderMergedChunk() {
-            // Supprimer les anciens meshes fusionnés s'ils existent
-            for (const type in chunkMeshes) {
-                scene.remove(chunkMeshes[type]);
-            }
+        function renderChunk(chunkKey) {
+            const chunk = chunkData[chunkKey];
+            const chunkGroup = chunkMeshes[chunkKey];
+            
+            // 1. Nettoyage du groupe de meshes existantes pour ce chunk
+            chunkGroup.clear();
 
-            // Groupements des géométries de faces (et non plus de cubes complets)
-            const tempFaceGeometries = { 'grass': [], 'dirt': [], 'rock': [] };
+            // NOUVEAU: Inclure les types de blocs d'arbre dans la fusion
+            const tempFaceGeometries = { 'grass': [], 'dirt': [], 'rock': [], 'wood': [], 'leaves': [] };
 
-            let totalFacesRendered = 0;
-
-            // Parcourir les données du monde
-            for (const key in world) {
-                const block = world[key];
+            // 2. Parcourir les données UNIQUEMENT dans ce chunk
+            for (const key in chunk) {
+                const block = chunk[key];
                 const { x, y, z, type } = block;
                 
-                // Pour chaque face possible du bloc
                 for (const face of CUBE_FACES) {
-                    // Tenter d'ajouter la face si elle est visible (non occluse par un bloc voisin)
                     const tempGeometriesList = tempFaceGeometries[type];
-                    addFaceIfVisible(tempGeometriesList, x, y, z, type, face.uv);
-
-                    // Calcul de faces (optionnel pour debug)
-                    if (tempGeometriesList.length > totalFacesRendered) {
-                         totalFacesRendered = tempGeometriesList.length;
-                    }
+                    const faceIndex = face.uv; 
+                    addFaceIfVisible(tempGeometriesList, x, y, z, type, faceIndex);
                 }
             }
 
-            console.log("Nombre total de faces visibles à fusionner :", totalFacesRendered);
-
-            // Fusionner et ajouter à la scène
-            const meshesArray = [];
+            // 3. Fusionner et ajouter au groupe du chunk
             for (const type in tempFaceGeometries) {
                 if (tempFaceGeometries[type].length > 0) {
-                    // Fusionner toutes les géométries de ce type
+                    // Utiliser le BufferGeometryUtils.mergeBufferGeometries
                     const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(tempFaceGeometries[type]);
-                    
-                    // Recalculer les normales pour que l'éclairage soit correct après la fusion
                     mergedGeometry.computeVertexNormals(); 
 
-                    // Utiliser le matériau texturé (ou le matériau de repli)
                     const mesh = new THREE.Mesh(mergedGeometry, materials[type]);
                     
-                    // IMPORTANT: Marquer le mesh fusionné pour le raycasting
-                    mesh.isVoxelChunk = true;
+                    mesh.isVoxelChunk = true; // Garde pour le Raycasting
                     
-                    scene.add(mesh);
-                    chunkMeshes[type] = mesh; 
-                    meshesArray.push(mesh);
+                    // Ajout au GROUPE DU CHUNK, pas directement à la scène
+                    chunkGroup.add(mesh);
                 }
             }
-            return meshesArray;
         }
 
         // --- Logique d'Inventaire et UI ---
@@ -613,15 +841,22 @@
                 const type = slot.getAttribute('data-block-type');
                 const count = inventory[type] ? inventory[type].count : 0;
 
-                // Mettre à jour le texte du slot
-                const name = type.charAt(0).toUpperCase() + type.slice(1);
-                const numberKey = slot.innerText.match(/\((\d)\)/)[1]; // Récupère (1), (2), (3)
-                slot.innerText = `${name} (${numberKey})\n[${count}]`;
+                const nameMap = {
+                    'grass': 'Herbe',
+                    'dirt': 'Terre',
+                    'rock': 'Roche',
+                    'wood': 'Bois',
+                    'leaves': 'Feuilles'
+                };
+                const name = nameMap[type] || type.charAt(0).toUpperCase() + type.slice(1);
+                
+                // Récupérer la touche rapide (1, 2, 3...)
+                const numberIndex = Array.from(slots).indexOf(slot) + 1;
+                
+                slot.innerText = `${name} (${numberIndex})\n[${count}]`;
 
-                // Mettre à jour la sélection
                 slot.classList.toggle('selected', type === selectedBlockType);
 
-                // Ajouter l'écouteur de clic pour la sélection
                 slot.onclick = () => {
                     selectedBlockType = type;
                     updateInventoryUI(); 
@@ -634,7 +869,7 @@
          */
         function selectBlockByIndex(index) {
             const slots = document.querySelectorAll('.slot');
-            const targetSlot = slots[index - 1]; // Index 1 -> slot 0
+            const targetSlot = slots[index - 1]; 
             if (targetSlot) {
                 selectedBlockType = targetSlot.getAttribute('data-block-type');
                 updateInventoryUI();
@@ -684,19 +919,18 @@
         function onKeyDown(event) {
             const key = event.key.toLowerCase();
             
-            // Sélection rapide de l'inventaire
-            if (key === '1' || key === '2' || key === '3') {
-                selectBlockByIndex(parseInt(key));
+            // Gestion des touches numériques pour l'inventaire (1 à 5)
+            const numKey = parseInt(key);
+            if (numKey >= 1 && numKey <= 5) {
+                selectBlockByIndex(numKey);
             }
 
-            // Gestion du saut - SEULEMENT SI LA TOUCHE EST ENFONCÉE ET QUE LE JOUEUR EST AU SOL
             if (key === ' ' && onGround) {
                 velocityY = JUMP_POWER;
                 onGround = false;
                 event.preventDefault(); 
             }
 
-            // Mappage des touches ZQSD
             if (keys.hasOwnProperty(key)) {
                 keys[key] = true;
                 event.preventDefault();
@@ -729,15 +963,13 @@
             } 
             // --- Clic Droit (2) : Placer un bloc ---
             else if (event.button === 2) {
-                event.preventDefault(); // Empêcher le menu contextuel du navigateur
+                event.preventDefault(); 
 
                 if (!intersect) {
-                    console.log("ÉCHEC PLACEMENT: Le Raycast n'a trouvé AUCUN bloc. Soit trop loin (> MAX_REACH_DISTANCE unités), soit rien n'est en ligne de mire.");
                     return;
                 }
                 
                 const targetBlockCoords = getBlockCoordsFromRaycast(intersect);
-                // La face est dans l'espace local de l'objet, on doit la transformer en espace monde
                 const normal = intersect.face.normal.clone();
                 normal.transformDirection(intersect.object.matrixWorld).normalize();
 
@@ -757,14 +989,14 @@
          * Effectue le raycasting pour trouver le bloc ciblé.
          */
         function getTargetBlock() {
-            // Le Raycaster regarde toujours au centre de l'écran (0, 0 en coordonnées normalisées)
             pointer.set(0, 0); 
             raycaster.setFromCamera(pointer, camera);
 
-            // Ne considérer que les meshes marqués comme des chunks de voxels
-            const voxelChunks = scene.children.filter(obj => obj.isVoxelChunk);
-            
-            const intersects = raycaster.intersectObjects(voxelChunks, false);
+            // Filtrer les enfants qui sont des groupes de chunks
+            const chunkGroups = scene.children.filter(obj => obj.name && obj.name.startsWith('Chunk-'));
+
+            // Utiliser le groupe de chunks pour l'intersection
+            const intersects = raycaster.intersectObjects(chunkGroups.flatMap(g => g.children), false);
 
             if (intersects.length > 0 && intersects[0].distance < MAX_REACH_DISTANCE) {
                 return intersects[0];
@@ -776,10 +1008,10 @@
          * Récupère les coordonnées du bloc (x, y, z) à partir d'un résultat de raycast
          */
         function getBlockCoordsFromRaycast(intersect) {
-            // Recule légèrement du point d'intersection vers l'intérieur du bloc 
+            // Utiliser le point d'intersection, mais décalé très légèrement vers l'intérieur du bloc pour s'assurer que nous touchons le bon bloc
             const pointInBlock = intersect.point.clone().sub(intersect.face.normal.clone().multiplyScalar(0.001));
             
-            // Correction Y: L'indice Y du bloc est Math.floor(pointInBlock.y)
+            // Les coordonnées de Three.js sont centrées sur les voxels. On utilise Math.round pour l'axe x et z, et Math.floor pour y (les blocs sont empilés à des coordonnées entières)
             return {
                 x: Math.round(pointInBlock.x), 
                 y: Math.floor(pointInBlock.y), 
@@ -792,8 +1024,10 @@
          */
         function getBlockDataFromRaycast(intersect) {
              const coords = getBlockCoordsFromRaycast(intersect);
-             const key = `${coords.x},${coords.y},${coords.z}`;
-             return world[key];
+             const blockKey = `${coords.x},${coords.y},${coords.z}`;
+             const chunkKey = getChunkKey(coords.x, coords.z);
+             
+             return chunkData[chunkKey] ? chunkData[chunkKey][blockKey] : null;
         }
 
 
@@ -804,19 +1038,15 @@
         function onMouseMove(event) {
             if (!pointerLocked) return;
 
-            // Rotation autour de l'axe Y (gauche/droite)
             playerGroup.rotation.y -= event.movementX * mouseSensitivity;
 
-            // Rotation de la caméra (haut/bas)
             let pitch = camera.rotation.x - event.movementY * mouseSensitivity;
-            // Limiter l'angle de vue
             pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
             camera.rotation.x = pitch;
         }
         
         /**
          * Calcule la hauteur du sol en cherchant UNIQUEMENT les blocs sous les pieds.
-         * @returns {number} Coordonnée Y du niveau du sol (juste au-dessus du bloc solide).
          */
         function getCurrentFloorHeight() {
             const pX = Math.round(playerGroup.position.x);
@@ -824,20 +1054,30 @@
             
             let floorY = -Infinity;
             
-            // Déterminer le bloc Y où se trouvent actuellement les pieds du joueur.
-            // On commence la recherche DEPUIS ce niveau vers le bas.
             let startY = Math.floor(playerGroup.position.y - PLAYER_HEIGHT);
             
-            // Rechercher le bloc solide le plus haut DANS la colonne (X, Z) sous startY
             for(let y = startY; y >= -10; y--) {
                 if (isBlockSolid(pX, y, pZ)) {
-                    // Le sol est le niveau Y+1 (un bloc au-dessus du bloc solide trouvé)
                     floorY = y + 1; 
                     break;
                 }
             }
-            return floorY === -Infinity ? -100 : floorY; // Retourne -100 si rien n'est trouvé
+            return floorY === -Infinity ? -100 : floorY;
         }
+
+        /**
+         * Met à jour l'affichage des coordonnées du joueur.
+         */
+        function updateCoordinatesUI() {
+            const pX = playerGroup.position.x;
+            const pY = playerGroup.position.y - PLAYER_HEIGHT; // Hauteur des pieds
+            const pZ = playerGroup.position.z;
+
+            // MIS À JOUR : Affichage minimaliste (X Y Z)
+            const coordsText = `${Math.round(pX)} ${Math.round(pY + 1)} ${Math.round(pZ)}`;
+            document.getElementById('coordsIndicator').innerText = coordsText;
+        }
+
 
         /**
          * Applique le mouvement et la physique au joueur, incluant la collision horizontale et verticale (GLISSANTE).
@@ -854,26 +1094,21 @@
             
             const moveVector = new THREE.Vector3(0, 0, 0);
 
-            // Mappage (S: Avancer | Z: Reculer | D: Gauche | Q: Droite)
             if (keys.s) moveVector.addScaledVector(forward, PLAYER_SPEED); 
             if (keys.z) moveVector.addScaledVector(forward, -PLAYER_SPEED); 
-            // Q et D inversés par demande:
-            if (keys.d) moveVector.addScaledVector(right, -PLAYER_SPEED); // D va à Gauche
-            if (keys.q) moveVector.addScaledVector(right, PLAYER_SPEED);  // Q va à Droite
+            if (keys.d) moveVector.addScaledVector(right, -PLAYER_SPEED); 
+            if (keys.q) moveVector.addScaledVector(right, PLAYER_SPEED);  
             
-            // Coordonnées actuelles 
             const currentX = playerGroup.position.x;
             const currentZ = playerGroup.position.z;
             const pY = playerGroup.position.y;
             
-            // Déterminer les deux blocs Y occupés par le joueur (tête et corps)
             const blockY1 = Math.floor(pY - PLAYER_HEIGHT + 0.1); 
             const blockY2 = Math.floor(pY - PLAYER_HEIGHT + 1.1); 
 
             let targetX = currentX;
             let targetZ = currentZ;
 
-            // Appliquer le mouvement désiré sur les coordonnées cibles
             targetX += moveVector.x;
             targetZ += moveVector.z;
 
@@ -882,25 +1117,17 @@
             if (Math.abs(moveVector.x) > 0.001) {
                 const dirX = Math.sign(moveVector.x);
                 
-                // Le bloc X vers lequel on se dirige, avec un décalage par rapport au centre du joueur (INSET)
-                // Ceci permet de vérifier le bloc solide juste à côté de la zone de collision du joueur.
                 const blockToTestX = Math.round(targetX + dirX * (0.5 - PLAYER_HORIZONTAL_INSET)); 
-                
-                // Coordonnée Z du bloc sous le joueur (ou près de lui)
                 const checkBlockZ = Math.round(currentZ); 
                 
                 if (isBlockSolid(blockToTestX, blockY1, checkBlockZ) || isBlockSolid(blockToTestX, blockY2, checkBlockZ)) {
-                    // Collision en X détectée. Snapper à la limite X du mur.
                     if (dirX > 0) {
-                        // Mouvement X+ : Arrêter juste avant le mur Bx.
                         const wallX = blockToTestX - 0.5;
                         targetX = wallX - PLAYER_HORIZONTAL_INSET;
                     } else {
-                        // Mouvement X- : Arrêter juste après le mur Bx.
                         const wallX = blockToTestX + 0.5;
                         targetX = wallX + PLAYER_HORIZONTAL_INSET;
                     }
-                    // Le mouvement en Z n'est PAS annulé, d'où l'effet de glissement.
                 }
             }
 
@@ -908,28 +1135,20 @@
             if (Math.abs(moveVector.z) > 0.001) {
                 const dirZ = Math.sign(moveVector.z);
                 
-                // Le bloc Z vers lequel on se dirige, avec un décalage par rapport au centre du joueur (INSET)
                 const blockToTestZ = Math.round(targetZ + dirZ * (0.5 - PLAYER_HORIZONTAL_INSET)); 
-                
-                // Coordonnée X du bloc sous le joueur, en utilisant la targetX (qui peut avoir été corrigée)
                 const checkBlockX = Math.round(targetX); 
                 
                 if (isBlockSolid(checkBlockX, blockY1, blockToTestZ) || isBlockSolid(checkBlockX, blockY2, blockToTestZ)) {
-                    // Collision en Z détectée. Snapper à la limite Z du mur.
                     if (dirZ > 0) {
-                        // Mouvement Z+ : Arrêter juste avant le mur Bz.
                         const wallZ = blockToTestZ - 0.5;
                         targetZ = wallZ - PLAYER_HORIZONTAL_INSET;
                     } else {
-                        // Mouvement Z- : Arrêter juste après le mur Bz.
                         const wallZ = blockToTestZ + 0.5;
                         targetZ = wallZ + PLAYER_HORIZONTAL_INSET;
                     }
-                    // Le mouvement en X (corrigé ou non) est préservé.
                 }
             }
             
-            // Appliquer les positions finales (corrigées ou non)
             playerGroup.position.x = targetX;
             playerGroup.position.z = targetZ;
 
@@ -939,21 +1158,16 @@
             velocityY += GRAVITY;
             playerGroup.position.y += velocityY;
 
-            // Mettre à jour les blocs X et Z après le mouvement horizontal
             const finalPX = Math.round(playerGroup.position.x);
             const finalPZ = Math.round(playerGroup.position.z);
             const newPY = playerGroup.position.y;
-            const newBlockY2 = Math.floor(newPY - PLAYER_HEIGHT + 1.1); // Le bloc occupé par la tête
+            const newBlockY2 = Math.floor(newPY - PLAYER_HEIGHT + 1.1); 
 
-            // A. Collision avec le Plafond (Ceiling) - Ne vérifie que si on monte (velocityY > 0)
+            // A. Collision avec le Plafond (Ceiling) 
             if (velocityY > 0) { 
                 if (isBlockSolid(finalPX, newBlockY2, finalPZ)) {
-                    // La tête frappe le bloc
-                    
-                    // Positionner le joueur juste sous le bloc frappé
-                    playerGroup.position.y = (newBlockY2 + 1.0) - 0.001; // Niveau du haut du bloc, moins une petite marge
-                    
-                    velocityY = 0; // Arrêter la montée
+                    playerGroup.position.y = (newBlockY2 + 1.0) - 0.001; 
+                    velocityY = 0; 
                 }
             }
 
@@ -962,12 +1176,10 @@
             const playerFeetY = playerGroup.position.y - PLAYER_HEIGHT; 
 
             if (playerFeetY < floorHeight) {
-                // Remettre le joueur juste au-dessus du sol (VRAI SOL)
                 playerGroup.position.y = floorHeight + PLAYER_HEIGHT;
                 velocityY = 0;
                 onGround = true; 
             } else if (velocityY < 0) { 
-                // Si le joueur est en train de tomber, il n'est plus au sol.
                 onGround = false;
             }
         }
@@ -992,6 +1204,7 @@
             
             updatePlayerMovement(); 
             updateFPS(now); 
+            updateCoordinatesUI(); // Mise à jour des coordonnées
 
             renderer.render(scene, camera);
         }
