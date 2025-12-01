@@ -3,25 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu Voxel 3D - Seed et Persistance Firebase</title>
+    <title>Jeu Voxel 3D - Seed et Perlin Noise</title>
     <!-- Chargement de la bibliothèque Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- Outil nécessaire pour fusionner les géométries (performance) -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
-
-    <!-- Import des modules Firebase -->
+    
+    <!-- IMPORTS FIREBASE -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // Importation de updateDoc pour plus de flexibilité si besoin, mais setDoc suffira ici
+        import { getFirestore, doc, setDoc, getDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Exposer les modules Firebase à la portée globale (window) pour utilisation dans le script principal
-        window.firebaseImports = {
-            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
-            getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel
+        // Exposer les fonctions d'initialisation et les références DB/Auth au scope global
+        window.FirebaseInitializer = {
+            initializeApp: (config) => initializeApp(config),
+            getAuth: (app) => getAuth(app),
+            signInAnonymously: (auth) => signInAnonymously(auth),
+            signInWithCustomToken: (auth, token) => signInWithCustomToken(auth, token),
+            getFirestore: (app) => getFirestore(app),
+            doc: doc,
+            setDoc: setDoc,
+            getDoc: getDoc,
+            collection: collection,
+            setLogLevel: setLogLevel
         };
     </script>
-
+    
     <style>
         /* Styles pour que le jeu prenne toute la page */
         body { margin: 0; overflow: hidden; background-color: #70c5ff; }
@@ -40,6 +50,7 @@
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
             text-align: center;
             font-family: sans-serif;
+            color: white;
         }
         #startButton {
             padding: 15px 30px;
@@ -75,12 +86,26 @@
             text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.7);
         }
 
-        #fpsIndicator, #coordsIndicator, #userIdIndicator {
+        #fpsIndicator, #coordsIndicator, #dbStatus {
             background-color: rgba(0, 0, 0, 0.5);
             padding: 5px 10px;
             border-radius: 5px;
             margin-bottom: 5px; 
-            font-size: 12px;
+            font-size: 14px;
+        }
+        
+        /* Indicateur de graine */
+        #seedIndicator {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            z-index: 100;
+            font-size: 14px;
         }
         
         /* Réticule (Crosshair) */
@@ -130,20 +155,6 @@
             border-color: gold; /* Indiquer le bloc sélectionné */
             transform: scale(1.1);
         }
-        
-        /* Indicateur de graine */
-        #seedIndicator {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            color: white;
-            background-color: rgba(0, 0, 0, 0.5);
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-family: monospace;
-            z-index: 100;
-            font-size: 14px;
-        }
     </style>
 </head>
 <body>
@@ -156,7 +167,8 @@
     </div>
     
     <div id="statusIndicators">
-        <div id="userIdIndicator">ID Joueur: Chargement...</div>
+        <!-- NOUVEL INDICATEUR FIREBASE -->
+        <div id="dbStatus" class="text-yellow-400">DB: Connexion...</div> 
         <div id="fpsIndicator">FPS: --</div>
         <!-- Coordonnées minimalistes (X Y Z) -->
         <div id="coordsIndicator">-- -- --</div>
@@ -177,6 +189,7 @@
     <script>
         
         // --- 0. Générateur de Bruit de Perlin Simplex (Simple Implémentation) ---
+        // Utilisé pour générer des reliefs organiques et fluides basés sur une graine (seed)
         const PerlinNoise = (function() {
             let p = new Uint8Array(512);
             let permutation = [];
@@ -191,10 +204,12 @@
                 })();
 
                 permutation = Array.from({ length: 256 }, (_, i) => i);
+
                 for (let i = 255; i > 0; i--) {
                     const j = Math.floor(rng.next() * (i + 1));
                     [permutation[i], permutation[j]] = [permutation[j], permutation[i]];
                 }
+                
                 for (let i = 0; i < 256; i++) {
                     p[i] = p[i + 256] = permutation[i];
                 }
@@ -257,13 +272,14 @@
                  return lerp(w, lerp(u, grad(p[AA], x, 0, z),
                                           grad(p[BA], x - 1, 0, z)),
                                   lerp(u, grad(p[AA + 1], x, 0, z - 1), 
-                                          grad(p[BA + 1], x - 1, 0, z - 1))); 
+                                          grad(p[BA + 1], x - 1, 0, z - 1)));
             }
 
+
             return {
-                init: initPermutation,
+                init: initPermutation, 
                 noise: noise,
-                noise2d: noise2d
+                noise2d: noise2d 
             };
         })();
 
@@ -274,12 +290,23 @@
         const chunkMeshes = {}; 
         
         // Variables Firebase
-        let db;
-        let auth;
-        let userId;
-        let appId;
-        const activeListeners = {}; // Pour gérer les abonnements onSnapshot
-        
+        let db, auth;
+        let userId = null;
+        let isAuthReady = false;
+        const modifiedChunks = new Set(); // Chunks modifiés à sauvegarder
+        const CHUNK_COLLECTION = "world"; // Collection Firestore
+        const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-voxel-game-id';
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDWEHH-r_C98jXNHadTjfRimUBeoO8EjA0",
+            authDomain: "mincr-98de6.firebaseapp.com",
+            projectId: "mincr-98de6",
+            storageBucket: "mincr-98de6.firebase-storage.app",
+            messagingSenderId: "753284251628",
+            appId: "1:753284251628:web:cac80cc52dfae85762cac9",
+            measurementId: "G-H9371EHC7P"
+        };
+        const SAVE_INTERVAL_FRAMES = 300; // Sauvegarde toutes les 5 secondes (à 60 FPS)
+
         // Raycasting
         const raycaster = new THREE.Raycaster();
         const pointer = new THREE.Vector2();
@@ -295,7 +322,7 @@
         let selectedBlockType = 'grass'; 
         
         // Configuration de la Génération du Monde
-        const CHUNK_SIZE = 5; 
+        const CHUNK_SIZE = 5; // Taille de chunk 
         const RENDER_RADIUS = 4; 
         let lastChunkKey = "0,0"; 
 
@@ -305,6 +332,7 @@
         // Pour la mise à jour des chunks dans la boucle d'animation
         let chunkUpdateCounter = 0;
         const CHUNK_UPDATE_INTERVAL = 60; 
+        let saveCounter = 0; 
 
         const BLOCK_TEXTURES_URL = {
             grass: { url: 'grass.png', top: [0, 1], bottom: [0, 0], side: [1, 1] }, 
@@ -330,6 +358,7 @@
         let onGround = false; 
         let initialSpawnSet = false; 
 
+        // État des touches pour le mouvement (ZQSD + Espace + 1-5 pour inventaire)
         const keys = {
             z: false, q: false, s: false, d: false,
             ' ': false, 
@@ -352,23 +381,235 @@
         let frameCount = 0;
         let fps = 0;
         
-        // --- Fonctions d'Utilité Firestore ---
-        
-        function getChunkDocRef(chunkKey) {
-            // Chemin de stockage public: /artifacts/{appId}/public/data/chunks/{chunkKey}
-            // L'ID de la collection parent est 'artifacts'
-            const artifactId = appId; // Utilise l'ID de l'application
-            const collectionPath = `/artifacts/${artifactId}/public/data/chunks`;
-            
-            // Assurez-vous que db est initialisé
-            if (!db) {
-                console.error("Firestore n'est pas initialisé.");
-                return null;
+        // --- NOUVELLES FONCTIONS FIREBASE & PERSISTANCE ---
+
+        /**
+         * Initialise Firebase et authentifie l'utilisateur.
+         */
+        async function initFirebase() {
+            if (typeof window.FirebaseInitializer === 'undefined') {
+                 console.error("Firebase SDK non chargé. Impossible de persister les données.");
+                 document.getElementById('dbStatus').innerText = "DB: ERREUR (SDK manquant)";
+                 return;
             }
-            return firebaseImports.doc(db, collectionPath, chunkKey); 
+            const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, getFirestore, setLogLevel } = window.FirebaseInitializer;
+            
+            try {
+                // setLogLevel('debug'); // Décommenter pour le débogage Firestore
+                const app = initializeApp(FIREBASE_CONFIG);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+                let signedIn = false;
+                
+                // Tenter la connexion avec le jeton personnalisé (s'il existe)
+                if (initialAuthToken) {
+                    try {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        signedIn = true;
+                    } catch (error) {
+                        console.warn("Échec de la connexion avec le token personnalisé (auth/custom-token-mismatch ou expiré). Basculement vers la connexion anonyme.");
+                        // Ne pas considérer cela comme une erreur fatale. Le statut sera mis à jour après la tentative anonyme.
+                    }
+                }
+                
+                // Si la connexion n'a pas réussi avec le token ou s'il n'existait pas, on tente la connexion anonyme.
+                if (!signedIn) {
+                    await signInAnonymously(auth);
+                }
+                
+                userId = auth.currentUser.uid;
+                isAuthReady = true;
+                document.getElementById('dbStatus').innerText = `DB: Connecté (User: ${userId.substring(0, 4)}...)`;
+                document.getElementById('dbStatus').classList.add('text-green-400');
+                document.getElementById('dbStatus').classList.remove('text-yellow-400');
+                
+            } catch (error) {
+                console.error("Erreur d'initialisation Firebase:", error);
+                document.getElementById('dbStatus').innerText = "DB: ERREUR Connexion";
+                document.getElementById('dbStatus').classList.add('text-red-400');
+            }
+        }
+        
+        /**
+         * Compile un chunk pour un stockage compact dans Firestore.
+         * Stocke les blocs existants sous forme de Map<"localX_localY_localZ", "type">.
+         */
+        function serializeChunk(chunkKey) {
+            const chunk = chunkData[chunkKey];
+            if (!chunk) return null;
+
+            const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
+            const startX = chunkX * CHUNK_SIZE;
+            const startZ = chunkZ * CHUNK_SIZE;
+            
+            const compactBlocks = {};
+            
+            for (const key in chunk) {
+                const block = chunk[key];
+                // Conversion des coordonnées mondiales aux coordonnées locales (0 à CHUNK_SIZE-1 pour X/Z)
+                const localX = block.x - startX;
+                const localZ = block.z - startZ;
+                const localY = block.y; // Y est mondial mais compact pour ce chunk
+                
+                const compactKey = `${localX}_${localY}_${localZ}`;
+                compactBlocks[compactKey] = block.type;
+            }
+            
+            return { blocks: compactBlocks, seed: WORLD_SEED };
+        }
+        
+        /**
+         * Décompile les données compactes de Firestore dans le format de données de jeu (chunkData).
+         */
+        function deserializeChunk(chunkKey, data) {
+            const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
+            const startX = chunkX * CHUNK_SIZE;
+            const startZ = chunkZ * CHUNK_SIZE;
+            
+            const decompiledBlocks = {};
+
+            if (data && data.blocks) {
+                for (const compactKey in data.blocks) {
+                    const type = data.blocks[compactKey];
+                    const parts = compactKey.split('_');
+                    
+                    if (parts.length === 3) {
+                        const localX = parseInt(parts[0]);
+                        const localY = parseInt(parts[1]);
+                        const localZ = parseInt(parts[2]);
+                        
+                        // Conversion des coordonnées locales aux coordonnées mondiales
+                        const x = startX + localX;
+                        const y = localY;
+                        const z = startZ + localZ;
+
+                        const worldKey = `${x},${y},${z}`;
+                        decompiledBlocks[worldKey] = { x, y, z, type };
+                    }
+                }
+            }
+            return decompiledBlocks;
         }
 
-        // --- NOUVELLE FONCTION: Trouver le Chunk à partir des coordonnées mondiales ---
+        /**
+         * Charge un chunk depuis Firestore. Retourne true si trouvé, false sinon.
+         */
+        async function loadChunkFromFirestore(chunkKey) {
+            if (!isAuthReady) return false;
+
+            const { getDoc, doc, collection } = window.FirebaseInitializer;
+            
+            // Chemin Firestore: artifacts/{appId}/public/data/world/{chunkKey}
+            const chunkDocRef = doc(collection(db, `artifacts/${APP_ID}/public/data/${CHUNK_COLLECTION}`), chunkKey);
+
+            try {
+                const docSnap = await getDoc(chunkDocRef);
+                
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    
+                    // Si le chunk chargé provient d'une autre seed, on ignore pour forcer la régénération
+                    if (data.seed && data.seed !== WORLD_SEED) {
+                         console.warn(`Chunk ${chunkKey} ignoré (Seed: ${data.seed}, Attendu: ${WORLD_SEED})`);
+                         return false; 
+                    }
+
+                    chunkData[chunkKey] = deserializeChunk(chunkKey, data);
+                    // console.log(`Chunk chargé depuis Firestore: ${chunkKey}`);
+                    return true;
+                }
+            } catch (error) {
+                console.error(`Erreur lors du chargement du chunk ${chunkKey}:`, error);
+            }
+            
+            return false;
+        }
+
+        /**
+         * Sauvegarde un chunk modifié dans Firestore.
+         * MODIFICATION CLÉ : setDoc sans { merge: true } pour s'assurer que l'intégralité 
+         * du champ 'blocks' est remplacée, ce qui permet de persister les destructions de blocs.
+         */
+        async function saveChunkToFirestore(chunkKey) {
+            if (!isAuthReady || !modifiedChunks.has(chunkKey)) return;
+
+            const { setDoc, doc, collection } = window.FirebaseInitializer;
+            const serializedData = serializeChunk(chunkKey);
+            
+            if (!serializedData) return;
+
+            // Chemin Firestore: artifacts/{appId}/public/data/world/{chunkKey}
+            const chunkDocRef = doc(collection(db, `artifacts/${APP_ID}/public/data/${CHUNK_COLLECTION}`), chunkKey);
+
+            try {
+                // ANCIEN CODE : await setDoc(chunkDocRef, serializedData, { merge: true });
+                // NOUVEAU CODE : Remplace l'intégralité du document, y compris le champ 'blocks'.
+                // Cela garantit que les blocs manquants (cassés) ne réapparaissent pas.
+                await setDoc(chunkDocRef, serializedData); 
+                modifiedChunks.delete(chunkKey); 
+                // console.log(`Chunk sauvegardé: ${chunkKey}`);
+            } catch (error) {
+                console.error(`Erreur lors de la sauvegarde du chunk ${chunkKey}:`, error);
+            }
+        }
+        
+        /**
+         * Gère la sauvegarde des chunks modifiés.
+         */
+        function saveModifiedChunks() {
+            if (!modifiedChunks.size) return;
+
+            // Sauvegarder jusqu'à 5 chunks par cycle pour ne pas bloquer l'animation
+            const chunksToSave = Array.from(modifiedChunks).slice(0, 5); 
+            chunksToSave.forEach(key => saveChunkToFirestore(key));
+        }
+
+
+        // --- Fonctions d'Interaction avec le Monde ---
+        
+        /**
+         * Met à jour le monde de données et l'affichage 3D.
+         */
+        function updateWorld(x, y, z, newType = null) {
+            const chunkKey = getChunkKey(x, z);
+            const blockKey = `${x},${y},${z}`;
+
+            if (!chunkData[chunkKey]) {
+                if (newType) {
+                    // Si on place un bloc dans un chunk non chargé, on le génère/charge d'abord
+                    generateChunkData(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
+                } else {
+                    return; 
+                }
+            }
+
+            if (newType) {
+                chunkData[chunkKey][blockKey] = { x, y, z, type: newType };
+            } else {
+                delete chunkData[chunkKey][blockKey];
+            }
+            
+            // MARQUER LE CHUNK COMME MODIFIÉ
+            modifiedChunks.add(chunkKey); 
+
+            // --- 1. MISE À JOUR CIBLÉE DU CHUNK d'origine ---
+            renderChunk(chunkKey);
+
+            // --- 2. Vérification et Mise à Jour des CHUNKS VOISINS si le bloc est sur une bordure ---
+            const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
+            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE; 
+            const localZ = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+
+            if (localX === 0 || localX === CHUNK_SIZE - 1 || 
+                localZ === 0 || localZ === CHUNK_SIZE - 1) 
+            {
+                const neighborKeys = getNeighborChunkKeys(x, z);
+                neighborKeys.forEach(key => renderChunk(key));
+            }
+        }
+        
         function getChunkKey(x, z) {
             const chunkX = Math.floor(x / CHUNK_SIZE);
             const chunkZ = Math.floor(z / CHUNK_SIZE);
@@ -380,64 +621,15 @@
             const z = playerGroup.position.z;
             return getChunkKey(x, z);
         }
-
-        // --- Fonctions d'Interaction avec le Monde ---
         
-        /**
-         * Met à jour le monde de données et l'affichage 3D, puis sauvegarde le chunk sur Firestore.
-         */
-        async function updateWorld(x, y, z, newType = null) {
-            const chunkKey = getChunkKey(x, z);
-            const blockKey = `${x},${y},${z}`;
-            
-            const docRef = getChunkDocRef(chunkKey);
-            if (!docRef) return; 
-
-            // Si le chunk n'est pas chargé (pas dans chunkData), on ne peut pas y interagir.
-            if (!chunkData[chunkKey]) {
-                console.warn(`Tentative d'interaction avec un chunk non chargé: ${chunkKey}`);
-                return; 
-            }
-
-            // 1. Mise à jour locale (Immédiate)
-            if (newType) {
-                chunkData[chunkKey][blockKey] = { x, y, z, type: newType };
-            } else {
-                delete chunkData[chunkKey][blockKey];
-            }
-
-            // 2. Persistance sur Firestore (Asynchrone)
-            try {
-                // Sérialiser les données du chunk pour le stockage
-                const serializedData = JSON.stringify(chunkData[chunkKey]); 
-                
-                // setDoc fusionne avec le document existant
-                await firebaseImports.setDoc(docRef, { blocks: serializedData }, { merge: true }); 
-
-                // --- CONFIRMATION DE LOG CRITIQUE ---
-                console.log(`[FIREBASE] Chunk ${chunkKey} sauvegardé. Path: ${docRef.path}`);
-                
-                // Le re-rendu sera géré par l'onSnapshot du chunk,
-                // mais on force le re-rendu des voisins pour la suppression immédiate des faces d'occlusion.
-                const neighborKeys = getNeighborChunkKeys(x, z);
-                neighborKeys.forEach(key => renderChunk(key));
-
-            } catch (error) {
-                 console.error("Erreur de sauvegarde Firestore:", error);
-            }
-        }
-        
-        /**
-         * Retourne les clés des chunks voisins (jusqu'à 4) qui doivent être re-rendus.
-         */
         function getNeighborChunkKeys(x, z) {
             const keys = new Set();
             const chunkX = Math.floor(x / CHUNK_SIZE);
             const chunkZ = Math.floor(z / CHUNK_SIZE);
 
-            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE; 
+            const localX = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
             const localZ = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
-
+            
             if (localX === 0) keys.add(`${chunkX - 1},${chunkZ}`);
             if (localX === CHUNK_SIZE - 1) keys.add(`${chunkX + 1},${chunkZ}`);
             if (localZ === 0) keys.add(`${chunkX},${chunkZ - 1}`);
@@ -447,9 +639,6 @@
         }
 
 
-        /**
-         * Gère la destruction d'un bloc.
-         */
         function breakBlock(block) {
             if (!block) return;
             
@@ -463,21 +652,16 @@
             updateWorld(x, y, z, null);
         }
 
-        /**
-         * Gère la pose d'un bloc (si l'inventaire le permet).
-         */
         function placeBlock(x, y, z) {
             const typeToPlace = selectedBlockType;
             if (!typeToPlace || inventory[typeToPlace].count <= 0) {
                 return;
             }
 
-            // 1. Vérifier que l'emplacement n'est pas déjà occupé
             if (isBlockSolid(x, y, z)) {
                  return;
             }
 
-            // 2. Vérifier que le joueur ne se place pas lui-même dans le bloc
             const pX = playerGroup.position.x;
             const pZ = playerGroup.position.z;
             const pY = playerGroup.position.y;
@@ -504,7 +688,6 @@
                 return;
             }
 
-            // 3. Procéder au placement
             inventory[typeToPlace].count -= 1;
             
             updateWorld(x, y, z, typeToPlace);
@@ -518,18 +701,12 @@
         const TREE_NOISE_SCALE = 0.5; 
         const TREE_THRESHOLD = 0.7; 
 
-        /**
-         * Calcule la hauteur du terrain à la position (x, z) en utilisant le bruit de Perlin.
-         */
         function getTerrainHeight(x, z) {
             const noiseValue = PerlinNoise.noise(x * TERRAIN_SCALE, z * TERRAIN_SCALE, 0); 
             const height = (noiseValue + 1) * 0.5 * TERRAIN_AMPLITUDE; 
             return Math.floor(height);
         }
         
-        /**
-         * Vérifie si un bloc existe à la position (x, y, z) dans les données de chunk.
-         */
         function isBlockSolid(x, y, z) {
             const chunkKey = getChunkKey(x, z);
             const blockKey = `${Math.round(x)},${Math.round(y)},${Math.round(z)}`;
@@ -602,56 +779,24 @@
 
 
         async function init() {
-            // Attendre que les imports Firebase soient chargés
-            while (typeof window.firebaseImports === 'undefined') {
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
+            // 0. Initialisation Firebase
+            await initFirebase();
             
-            // --- 0. Initialisation Firebase et Auth ---
-            // Le chemin de l'artifact est basé sur l'appId, il est donc essentiel de le définir.
-            appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-
-            try {
-                // Initialisation et connexion
-                const app = firebaseImports.initializeApp(firebaseConfig);
-                db = firebaseImports.getFirestore(app);
-                auth = firebaseImports.getAuth(app);
-                
-                // Activez les logs de débogage pour Firestore
-                firebaseImports.setLogLevel('Debug'); 
-
-                if (typeof __initial_auth_token !== 'undefined') {
-                    await firebaseImports.signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await firebaseImports.signInAnonymously(auth);
-                }
-                userId = auth.currentUser?.uid || crypto.randomUUID();
-                document.getElementById('userIdIndicator').innerText = `ID Joueur: ${userId}`;
-                console.log(`[FIREBASE] App ID utilisé: ${appId}`);
-
-            } catch (error) {
-                console.error("Erreur d'initialisation Firebase:", error);
-                document.getElementById('userIdIndicator').innerText = `Erreur Auth: ${error.message.substring(0, 20)}...`;
-                // Continuer avec un userId par défaut si l'auth échoue
-                if (!userId) userId = 'anonymous-' + crypto.randomUUID(); 
-            }
-            
-            // 1. Initialisation du bruit de Perlin avec la graine
+            // 0. Initialisation du bruit de Perlin avec la graine
             PerlinNoise.init(WORLD_SEED);
             document.getElementById('currentSeed').innerText = WORLD_SEED;
             
-            // 2. Chargement des textures
+            // 1. Chargement des textures
             await loadTextures();
             
-            // 3. Initialisation des matériaux
+            // 2. Initialisation des matériaux
             initMaterials();
             
-            // 4. SCÈNE
+            // 3. SCÈNE
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x70c5ff); 
 
-            // 5. CAMÉRA et GROUPE DU JOUEUR 
+            // 4. CAMÉRA et GROUPE DU JOUEUR 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             camera.position.y = 0; 
             playerGroup = new THREE.Group(); 
@@ -660,37 +805,35 @@
             playerGroup.add(camera); 
             scene.add(playerGroup);
 
-            // 6. RENDU (RENDERER)
+            // 5. RENDU (RENDERER)
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
-            // 7. ÉCLAIRAGE
+            // 6. ÉCLAIRAGE
             const ambientLight = new THREE.AmbientLight(0x808080);
             scene.add(ambientLight);
             const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
             directionalLight.position.set(1, 2, 1);
             scene.add(directionalLight);
 
-            // 8. DÉMARRAGE DU SYSTÈME DE CHUNKS DYNAMIQUES
-            updateActiveChunks(true); // Initialiser le monde
+            // 7. DÉMARRAGE DU SYSTÈME DE CHUNKS DYNAMIQUES
+            updateActiveChunks(true); 
             
-            // 9. GESTION DES ÉVÉNEMENTS
+            // 8. GESTION DES ÉVÉNEMENTS
             setupEventListeners();
             
-            // 10. INITIALISATION DE L'INVENTAIRE
+            // 9. INITIALISATION DE L'INVENTAIRE
             updateInventoryUI();
             
             // Démarrer l'animation
             animate();
         }
         
-        /**
-         * Génère un arbre simple à une position donnée, écrivant dans le data object.
-         */
         function generateTreeData(data, baseX, baseZ, groundY) {
             const treeSeed = PerlinNoise.noise2d(baseX * 0.1 + WORLD_SEED, baseZ * 0.1 + WORLD_SEED);
+            
             const trunkHeight = Math.floor(Math.abs(treeSeed) * 2) + 4; 
             const leafRadius = 1; 
 
@@ -701,12 +844,10 @@
                  }
             };
 
-            // 1. Générer le Tronc
             for (let y = 0; y < trunkHeight; y++) {
                 addBlock(baseX, groundY + 1 + y, baseZ, 'wood');
             }
 
-            // 2. Générer le Feuillage
             const leafBaseY = groundY + trunkHeight; 
             
             for (let dx = -leafRadius; dx <= leafRadius; dx++) {
@@ -725,8 +866,8 @@
                             continue; 
                         }
 
-                        if (dy === 2 && (Math.abs(dx) > 0 || Math.abs(dz) > 0)) {
-                             if (Math.abs(dx) + Math.abs(dz) > leafRadius) continue;
+                        if (dy === 2 && (Math.abs(dx) + Math.abs(dz) > leafRadius)) {
+                             continue;
                         }
 
                         addBlock(baseX + dx, currentY, baseZ + dz, 'leaves');
@@ -737,9 +878,12 @@
 
 
         /**
-         * Génère les données des blocs pour un seul chunk de manière procédurale.
+         * Génère les données des blocs pour un seul chunk (chunkX, chunkZ)
          */
-        function generateProceduralChunkData(chunkX, chunkZ) {
+        function generateChunkData(chunkX, chunkZ) {
+            const chunkKey = `${chunkX},${chunkZ}`;
+            if (chunkData[chunkKey]) return; 
+
             const data = {};
             const startX = chunkX * CHUNK_SIZE;
             const endX = startX + CHUNK_SIZE;
@@ -749,21 +893,18 @@
             for (let x = startX; x < endX; x++) {
                 for (let z = startZ; z < endZ; z++) {
                     const height = getTerrainHeight(x, z);
+                    const blockKey = `${x},${height},${z}`;
                     
-                    // Couche de surface
-                    data[`${x},${height},${z}`] = { x, y: height, z, type: 'grass' };
+                    data[blockKey] = { x, y: height, z, type: 'grass' };
                     
-                    // Sous-couche de terre
                     for (let y = height - 1; y >= height - 3; y--) {
                         data[`${x},${y},${z}`] = { x, y, z, type: 'dirt' };
                     }
                     
-                    // Couche de roche (profonde)
                     for (let y = height - 4; y >= -10; y--) { 
                         data[`${x},${y},${z}`] = { x, y, z, type: 'rock' };
                     }
                     
-                    // Placement d'arbre
                     const treeNoise = PerlinNoise.noise2d(x * TREE_NOISE_SCALE, z * TREE_NOISE_SCALE);
                     
                     if (treeNoise > TREE_THRESHOLD) { 
@@ -772,12 +913,15 @@
                 }
             }
             
-            return data;
+            chunkData[chunkKey] = data;
+            
+            if (!chunkMeshes[chunkKey]) {
+                 chunkMeshes[chunkKey] = new THREE.Group();
+                 chunkMeshes[chunkKey].name = `Chunk-${chunkKey}`;
+                 scene.add(chunkMeshes[chunkKey]);
+            }
         }
         
-        /**
-         * Supprime un chunk de la scène et des structures de données (déchargement).
-         */
         function unloadChunk(chunkKey) {
             if (chunkMeshes[chunkKey]) {
                 const meshGroup = chunkMeshes[chunkKey];
@@ -795,106 +939,95 @@
                 });
                 
                 delete chunkMeshes[chunkKey];
-                delete chunkData[chunkKey]; // Suppression des données locales
+                delete chunkData[chunkKey];
             }
         }
         
         /**
-         * Gère le chargement et le déchargement des chunks autour du joueur via onSnapshot.
+         * Gère le chargement, le déchargement et la génération des chunks autour du joueur.
          */
-        function updateActiveChunks(isInitialSpawn = false) {
-            if (!db) return; // Attendre l'initialisation de Firebase
-
+        async function updateActiveChunks(isInitialSpawn = false) {
             const playerChunkKey = getCurrentPlayerChunkKey();
             const [pCX, pCZ] = playerChunkKey.split(',').map(Number);
             
-            const requiredChunks = new Set();
+            const chunksToRender = new Set();
             const R = RENDER_RADIUS;
 
-            // 1. Déterminer les chunks requis et initialiser les écouteurs (listeners)
+            // 1. Identifier les chunks requis (R rayon), tenter de charger depuis DB ou générer
+            const loadPromises = [];
             for (let cX = pCX - R; cX <= pCX + R; cX++) {
                 for (let cZ = pCZ - R; cZ <= pCZ + R; cZ++) {
                     const key = `${cX},${cZ}`;
-                    requiredChunks.add(key);
+                    chunksToRender.add(key);
                     
-                    // S'assurer que le groupe Mesh existe
-                    if (!chunkMeshes[key]) {
-                         chunkMeshes[key] = new THREE.Group();
-                         chunkMeshes[key].name = `Chunk-${key}`;
-                         scene.add(chunkMeshes[key]);
-                    }
-
-                    if (!activeListeners[key]) {
-                        // Configurer un nouvel écouteur onSnapshot
-                        const docRef = getChunkDocRef(key);
-                        if (!docRef) continue; 
-                        
-                        const unsubscribe = firebaseImports.onSnapshot(docRef, async (docSnapshot) => {
-                            if (docSnapshot.exists()) {
-                                // A. Chargement depuis Firestore
-                                try {
-                                    const serializedData = docSnapshot.data().blocks;
-                                    // Utilisation de JSON.parse pour désérialiser
-                                    const blocks = JSON.parse(serializedData); 
-                                    
-                                    chunkData[key] = blocks;
-                                    renderChunk(key);
-                                    console.log(`[FIREBASE] Chunk ${key} chargé (existe).`);
-
-                                } catch (e) {
-                                    console.error(`Erreur de désérialisation du chunk ${key}:`, e);
-                                }
-                            } else {
-                                // B. Le chunk n'existe pas -> Génération procédurale et sauvegarde
-                                if (!chunkData[key]) {
-                                    console.log(`[FIREBASE] Chunk ${key} généré procéduralement et sauvegardé.`);
-                                    // Générer les données localement
-                                    const generatedData = generateProceduralChunkData(cX, cZ); 
-                                    chunkData[key] = generatedData;
-                                    
-                                    // Sauvegarder dans Firestore
-                                    const serializedData = JSON.stringify(generatedData);
-                                    // setDoc crée le document avec la donnée de génération
-                                    await firebaseImports.setDoc(docRef, { blocks: serializedData, generated_by: userId }, { merge: false });
-                                    
-                                    // Le re-rendu sera fait par le onSnapshot qui va se redéclenchez.
-                                    // Cependant, on le fait ici pour plus de réactivité.
-                                    renderChunk(key);
-                                }
-                            }
-                            
-                            // C. Initialisation de la position du joueur après le premier chargement de chunk
-                            if (isInitialSpawn && !initialSpawnSet && playerChunkKey === key) {
-                                 const terrainY = getTerrainHeight(0, 0); 
-                                 playerGroup.position.y = (terrainY + 1) + PLAYER_HEIGHT;
-                                 initialSpawnSet = true;
-                            }
-                        }, (error) => {
-                            console.error(`Error listening to chunk ${key}:`, error);
-                        });
-                        
-                        activeListeners[key] = unsubscribe;
+                    if (!chunkData[key]) {
+                        // Tenter de charger depuis Firebase d'abord
+                        if (isAuthReady) {
+                             loadPromises.push(loadChunkFromFirestore(key).then(loaded => {
+                                 if (!loaded) {
+                                     generateChunkData(cX, cZ);
+                                 }
+                             }));
+                        } else {
+                            // Si pas d'auth, générer directement
+                            generateChunkData(cX, cZ);
+                        }
+                    } else {
+                         // Créer le groupe s'il existe dans chunkData mais pas encore en mesh
+                        if (!chunkMeshes[key]) {
+                            chunkMeshes[key] = new THREE.Group();
+                            chunkMeshes[key].name = `Chunk-${key}`;
+                            scene.add(chunkMeshes[key]);
+                        }
                     }
                 }
             }
             
-            // 2. Nettoyer les écouteurs des chunks hors de portée
-            for (const key in activeListeners) {
-                if (!requiredChunks.has(key)) {
-                    activeListeners[key](); // Désabonnement
-                    unloadChunk(key); // Déchargement local
-                    delete activeListeners[key];
+            await Promise.all(loadPromises); // Attendre que tous les chargements/générations soient faits
+
+            // 2. Rendre (ou re-rendre) les chunks requis
+            chunksToRender.forEach(key => {
+                const meshGroup = chunkMeshes[key];
+                if (meshGroup && chunkData[key] && meshGroup.children.length === 0) {
+                     renderChunk(key);
+                }
+            });
+
+
+            // 3. Décharger les chunks qui sont TROP LOIN
+            for (const key in chunkData) {
+                if (!chunksToRender.has(key)) {
+                    // Si on décharge, on sauvegarde d'abord si modifié
+                    if (modifiedChunks.has(key)) {
+                        await saveChunkToFirestore(key);
+                    }
+                    unloadChunk(key);
                 }
             }
+            
+            // 4. Initialiser la position du joueur si c'est le premier appel
+            if (isInitialSpawn && !initialSpawnSet) {
+                 const terrainY = getTerrainHeight(0, 0); 
+                 playerGroup.position.y = (terrainY + 1) + PLAYER_HEIGHT;
+                 initialSpawnSet = true;
+            }
 
-            // 3. Mise à jour des maillages adjacents (pour la cohérence des frontières)
+            // 5. Mise à jour du maillage des chunks adjacents au changement de chunk
             if (playerChunkKey !== lastChunkKey) {
+                // CORRECTION DE L'ERREUR ICI : dz n'était pas défini en dehors de la boucle interne.
                 const [oldCX, oldCZ] = lastChunkKey.split(',').map(Number);
                 const keysToUpdate = new Set();
                 
+                // Ajouter les 9 chunks autour de la NOUVELLE position
                 for (let dx = -1; dx <= 1; dx++) {
                     for (let dz = -1; dz <= 1; dz++) {
                         keysToUpdate.add(`${pCX + dx},${pCZ + dz}`);
+                    }
+                }
+                
+                // Ajouter les 9 chunks autour de l'ANCIENNE position pour nettoyer les bordures
+                 for (let dx = -1; dx <= 1; dx++) {
+                    for (let dz = -1; dz <= 1; dz++) {
                         keysToUpdate.add(`${oldCX + dx},${oldCZ + dz}`);
                     }
                 }
@@ -910,41 +1043,35 @@
         }
 
 
-        /**
-         * Crée une face (quad) de cube avec des UVs spécifiques et la fusionne dans la géométrie globale.
-         */
         function addFaceIfVisible(targetGeometry, x, y, z, blockType, faceIndex) {
             const face = CUBE_FACES.find(f => f.uv === faceIndex);
             const [dx, dy, dz] = face.dir;
             
-            // L'occlusion culling vérifie dans les données mondiales, y compris les chunks voisins
             if (isBlockSolid(x + dx, y + dy, z + dz)) {
                 return;
             }
 
             const planeGeometry = new THREE.PlaneGeometry(1, 1);
 
-            // --- 1. Rotation et Translation pour aligner le plan avec la face ---
-            if (faceIndex === 0) { // Right (x+)
+            if (faceIndex === 0) { 
                 planeGeometry.rotateY(Math.PI / 2);
                 planeGeometry.translate(0.5, 0, 0);
-            } else if (faceIndex === 1) { // Left (x-)
+            } else if (faceIndex === 1) { 
                 planeGeometry.rotateY(-Math.PI / 2);
                 planeGeometry.translate(-0.5, 0, 0);
-            } else if (faceIndex === 2) { // Top (y+)
+            } else if (faceIndex === 2) { 
                 planeGeometry.rotateX(-Math.PI / 2);
                 planeGeometry.translate(0, 0.5, 0);
-            } else if (faceIndex === 3) { // Bottom (y-)
+            } else if (faceIndex === 3) { 
                 planeGeometry.rotateX(Math.PI / 2);
                 planeGeometry.translate(0, -0.5, 0);
-            } else if (faceIndex === 4) { // Front (z+)
+            } else if (faceIndex === 4) { 
                 planeGeometry.translate(0, 0, 0.5);
-            } else if (faceIndex === 5) { // Back (z-)
+            } else if (faceIndex === 5) { 
                 planeGeometry.rotateY(Math.PI);
                 planeGeometry.translate(0, 0, -0.5);
             }
 
-            // --- 2. Application des UVs de la texture (vignette) ---
             const config = BLOCK_TEXTURES_URL[blockType];
             let uv_coord;
 
@@ -956,7 +1083,6 @@
                 else uv_coord = config.side;
             }
 
-            // Logique de mappage UV (suppose une grille 2x2)
             const [u, v] = uv_coord;
             const uMin = u * 0.5;
             const vMin = v * 0.5;
@@ -970,27 +1096,21 @@
             planeUVs[4] = uMin; planeUVs[5] = vMin; 
             planeUVs[6] = uMax; planeUVs[7] = vMin; 
             
-            // --- 3. Translation aux coordonnées mondiales ---
             planeGeometry.translate(x, y + 0.5, z); 
 
             targetGeometry.push(planeGeometry);
         }
 
-        /**
-         * Construit les meshes fusionnées pour UN SEUL CHUNK.
-         */
         function renderChunk(chunkKey) {
             const chunk = chunkData[chunkKey];
             const chunkGroup = chunkMeshes[chunkKey];
             
             if (!chunk || !chunkGroup) return;
 
-            // 1. Nettoyage du groupe de meshes existantes pour ce chunk
             chunkGroup.clear();
 
             const tempFaceGeometries = { 'grass': [], 'dirt': [], 'rock': [], 'wood': [], 'leaves': [] };
 
-            // 2. Parcourir les données UNIQUEMENT dans ce chunk
             for (const key in chunk) {
                 const block = chunk[key];
                 const { x, y, z, type } = block;
@@ -1002,18 +1122,15 @@
                 }
             }
 
-            // 3. Fusionner et ajouter au groupe du chunk
             for (const type in tempFaceGeometries) {
                 if (tempFaceGeometries[type].length > 0) {
-                    // Utiliser le BufferGeometryUtils.mergeBufferGeometries
                     const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(tempFaceGeometries[type]);
                     mergedGeometry.computeVertexNormals(); 
 
                     const mesh = new THREE.Mesh(mergedGeometry, materials[type]);
                     
-                    mesh.isVoxelChunk = true; // Garde pour le Raycasting
+                    mesh.isVoxelChunk = true; 
                     
-                    // Ajout au GROUPE DU CHUNK, pas directement à la scène
                     chunkGroup.add(mesh);
                 }
             }
@@ -1021,9 +1138,6 @@
 
         // --- Logique d'Inventaire et UI ---
         
-        /**
-         * Met à jour l'affichage des slots d'inventaire.
-         */
         function updateInventoryUI() {
             const slots = document.querySelectorAll('.slot');
             slots.forEach(slot => {
@@ -1039,7 +1153,6 @@
                 };
                 const name = nameMap[type] || type.charAt(0).toUpperCase() + type.slice(1);
                 
-                // Récupérer la touche rapide (1, 2, 3...)
                 const numberIndex = Array.from(slots).indexOf(slot) + 1;
                 
                 slot.innerText = `${name} (${numberIndex})\n[${count}]`;
@@ -1053,9 +1166,6 @@
             });
         }
         
-        /**
-         * Sélectionne un type de bloc par son index (1, 2, 3...).
-         */
         function selectBlockByIndex(index) {
             const slots = document.querySelectorAll('.slot');
             const targetSlot = slots[index - 1]; 
@@ -1132,15 +1242,11 @@
             }
         }
         
-        /**
-         * Gère les Clics Gauche (bouton 0) et Droit (bouton 2)
-         */
         function onMouseDown(event) {
             if (!pointerLocked) return;
             
             const intersect = getTargetBlock();
 
-            // --- Clic Gauche (0) : Détruire un bloc ---
             if (event.button === 0) {
                 if (intersect) {
                     const blockData = getBlockDataFromRaycast(intersect);
@@ -1149,7 +1255,6 @@
                     }
                 }
             } 
-            // --- Clic Droit (2) : Placer un bloc ---
             else if (event.button === 2) {
                 event.preventDefault(); 
 
@@ -1173,9 +1278,6 @@
             }
         }
         
-        /**
-         * Effectue le raycasting pour trouver le bloc ciblé.
-         */
         function getTargetBlock() {
             pointer.set(0, 0); 
             raycaster.setFromCamera(pointer, camera);
@@ -1190,9 +1292,6 @@
             return null;
         }
 
-        /**
-         * Récupère les coordonnées du bloc (x, y, z) à partir d'un résultat de raycast
-         */
         function getBlockCoordsFromRaycast(intersect) {
             const pointInBlock = intersect.point.clone().sub(intersect.face.normal.clone().multiplyScalar(0.001));
             
@@ -1203,9 +1302,6 @@
             };
         }
 
-        /**
-         * Utilise les coordonnées du bloc ciblé pour retrouver les données dans le 'world'
-         */
         function getBlockDataFromRaycast(intersect) {
              const coords = getBlockCoordsFromRaycast(intersect);
              const blockKey = `${coords.x},${coords.y},${coords.z}`;
@@ -1229,9 +1325,6 @@
             camera.rotation.x = pitch;
         }
         
-        /**
-         * Calcule la hauteur du sol en cherchant UNIQUEMENT les blocs sous les pieds.
-         */
         function getCurrentFloorHeight() {
             const pX = Math.round(playerGroup.position.x);
             const pZ = Math.round(playerGroup.position.z);
@@ -1249,27 +1342,19 @@
             return floorY === -Infinity ? -100 : floorY;
         }
 
-        /**
-         * Met à jour l'affichage des coordonnées du joueur.
-         */
         function updateCoordinatesUI() {
             const pX = playerGroup.position.x;
-            const pY = playerGroup.position.y - PLAYER_HEIGHT; // Hauteur des pieds
+            const pY = playerGroup.position.y - PLAYER_HEIGHT; 
             const pZ = playerGroup.position.z;
 
-            // Affichage minimaliste (X Y Z)
             const coordsText = `${Math.round(pX)} ${Math.round(pY + 1)} ${Math.round(pZ)}`;
             document.getElementById('coordsIndicator').innerText = coordsText;
         }
 
 
-        /**
-         * Applique le mouvement et la physique au joueur, incluant la collision horizontale et verticale (GLISSANTE).
-         */
         function updatePlayerMovement() {
             if (!pointerLocked) return;
 
-            // --- 1. Mouvement Horizontal (Calcul du vecteur de déplacement) ---
             const forward = new THREE.Vector3();
             playerGroup.getWorldDirection(forward); 
             forward.y = 0; 
@@ -1297,7 +1382,6 @@
             targetZ += moveVector.z;
 
 
-            // --- 1.1 Résolution de Collision en X (Sliding) ---
             if (Math.abs(moveVector.x) > 0.001) {
                 const dirX = Math.sign(moveVector.x);
                 
@@ -1315,7 +1399,6 @@
                 }
             }
 
-            // --- 1.2 Résolution de Collision en Z (Sliding) ---
             if (Math.abs(moveVector.z) > 0.001) {
                 const dirZ = Math.sign(moveVector.z);
                 
@@ -1337,8 +1420,6 @@
             playerGroup.position.z = targetZ;
 
 
-            // --- 2. Mouvement Vertical (Gravité, Saut et Collisions) ---
-            
             velocityY += GRAVITY;
             playerGroup.position.y += velocityY;
 
@@ -1347,7 +1428,6 @@
             const newPY = playerGroup.position.y;
             const newBlockY2 = Math.floor(newPY - PLAYER_HEIGHT + 1.1); 
 
-            // A. Collision avec le Plafond (Ceiling) 
             if (velocityY > 0) { 
                 if (isBlockSolid(finalPX, newBlockY2, finalPZ)) {
                     playerGroup.position.y = (newBlockY2 + 1.0) - 0.001; 
@@ -1355,7 +1435,6 @@
                 }
             }
 
-            // B. Collision avec le Sol (Floor)
             const floorHeight = getCurrentFloorHeight();
             const playerFeetY = playerGroup.position.y - PLAYER_HEIGHT; 
 
@@ -1395,6 +1474,13 @@
                 if (chunkUpdateCounter >= CHUNK_UPDATE_INTERVAL) {
                     updateActiveChunks();
                     chunkUpdateCounter = 0;
+                }
+                
+                // Sauvegarde périodique
+                saveCounter++;
+                if (saveCounter >= SAVE_INTERVAL_FRAMES) {
+                    saveModifiedChunks();
+                    saveCounter = 0;
                 }
             }
 
