@@ -306,6 +306,11 @@
             measurementId: "G-H9371EHC7P"
         };
         const SAVE_INTERVAL_FRAMES = 300; // Sauvegarde toutes les 5 secondes (à 60 FPS)
+        
+        // --- NOUVEAUX ÉLÉMENTS POUR LA FILE D'ATTENTE DE MAILLAGE ---
+        const chunkGenerationQueue = []; // File d'attente pour le maillage (mesh rendering)
+        const MAX_CHUNKS_PER_FRAME = 3; // Limite le nombre de chunks maillés par image
+        const currentlyLoadingChunks = new Set(); // Empêche les tentatives de chargement multiples
 
         // Raycasting
         const raycaster = new THREE.Raycaster();
@@ -323,7 +328,8 @@
         
         // Configuration de la Génération du Monde
         const CHUNK_SIZE = 5; // Taille de chunk 
-        const RENDER_RADIUS = 23; 
+        const RENDER_RADIUS = 25; // Rayon de rendu en nombre de chunks
+        const RENDER_RADIUS_SQUARED = RENDER_RADIUS * RENDER_RADIUS; // Utilisé pour le test circulaire
         let lastChunkKey = "0,0"; 
 
         // Graine du Monde (Seed)
@@ -544,9 +550,7 @@
             const chunkDocRef = doc(collection(db, `artifacts/${APP_ID}/public/data/${CHUNK_COLLECTION}`), chunkKey);
 
             try {
-                // ANCIEN CODE : await setDoc(chunkDocRef, serializedData, { merge: true });
-                // NOUVEAU CODE : Remplace l'intégralité du document, y compris le champ 'blocks'.
-                // Cela garantit que les blocs manquants (cassés) ne réapparaissent pas.
+                // Remplace l'intégralité du document, y compris le champ 'blocks'.
                 await setDoc(chunkDocRef, serializedData); 
                 modifiedChunks.delete(chunkKey); 
                 // console.log(`Chunk sauvegardé: ${chunkKey}`);
@@ -594,8 +598,10 @@
             // MARQUER LE CHUNK COMME MODIFIÉ
             modifiedChunks.add(chunkKey); 
 
-            // --- 1. MISE À JOUR CIBLÉE DU CHUNK d'origine ---
-            renderChunk(chunkKey);
+            // --- 1. AJOUT À LA FILE D'ATTENTE DE MAILLAGE CIBLÉE DU CHUNK d'origine ---
+            if (!chunkGenerationQueue.includes(chunkKey)) {
+                chunkGenerationQueue.push(chunkKey);
+            }
 
             // --- 2. Vérification et Mise à Jour des CHUNKS VOISINS si le bloc est sur une bordure ---
             const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
@@ -606,7 +612,11 @@
                 localZ === 0 || localZ === CHUNK_SIZE - 1) 
             {
                 const neighborKeys = getNeighborChunkKeys(x, z);
-                neighborKeys.forEach(key => renderChunk(key));
+                neighborKeys.forEach(key => {
+                    if (!chunkGenerationQueue.includes(key)) {
+                        chunkGenerationQueue.push(key);
+                    }
+                });
             }
         }
         
@@ -940,64 +950,103 @@
                 
                 delete chunkMeshes[chunkKey];
                 delete chunkData[chunkKey];
+                
+                // Retirer de la file d'attente s'il était en attente de maillage
+                const indexInQueue = chunkGenerationQueue.indexOf(chunkKey);
+                if (indexInQueue > -1) {
+                    chunkGenerationQueue.splice(indexInQueue, 1);
+                }
             }
         }
         
         /**
+         * Vérifie si un chunk existe dans Firestore ou le génère si non trouvé.
+         * Appelé par updateActiveChunks pour gérer la latence I/O.
+         */
+        async function checkAndLoadChunkData(chunkX, chunkZ, chunkKey) {
+            let loaded = false;
+            
+            // 1. Tenter le chargement Firestore
+            if (isAuthReady) {
+                 loaded = await loadChunkFromFirestore(chunkKey);
+            }
+            
+            // 2. Si non chargé (ou pas d'Auth), générer
+            if (!loaded) {
+                generateChunkData(chunkX, chunkZ);
+            }
+            
+            // 3. Créer le groupe s'il n'existe pas encore
+            if (!chunkMeshes[chunkKey]) {
+                chunkMeshes[chunkKey] = new THREE.Group();
+                chunkMeshes[chunkKey].name = `Chunk-${chunkKey}`;
+                scene.add(chunkMeshes[chunkKey]);
+            }
+            
+            // 4. Ajouter à la file d'attente de maillage s'il n'y est pas déjà
+            if (chunkData[chunkKey] && !chunkGenerationQueue.includes(chunkKey)) {
+                chunkGenerationQueue.push(chunkKey);
+            }
+
+            currentlyLoadingChunks.delete(chunkKey);
+        }
+
+        /**
          * Gère le chargement, le déchargement et la génération des chunks autour du joueur.
+         * Utilise la distance pour la priorité. Ne bloque PAS pour le maillage.
          */
         async function updateActiveChunks(isInitialSpawn = false) {
             const playerChunkKey = getCurrentPlayerChunkKey();
             const [pCX, pCZ] = playerChunkKey.split(',').map(Number);
             
-            const chunksToRender = new Set();
+            const requiredChunks = []; // { key: string, distSq: number }
             const R = RENDER_RADIUS;
+            const R2 = RENDER_RADIUS_SQUARED; 
 
-            // 1. Identifier les chunks requis (R rayon), tenter de charger depuis DB ou générer
-            const loadPromises = [];
+            // 1. Identifier les chunks requis et calculer leur distance
             for (let cX = pCX - R; cX <= pCX + R; cX++) {
                 for (let cZ = pCZ - R; cZ <= pCZ + R; cZ++) {
-                    const key = `${cX},${cZ}`;
-                    chunksToRender.add(key);
+                    const dx = cX - pCX;
+                    const dz = cZ - pCZ;
+                    const distSq = dx * dx + dz * dz;
                     
-                    if (!chunkData[key]) {
-                        // Tenter de charger depuis Firebase d'abord
-                        if (isAuthReady) {
-                             loadPromises.push(loadChunkFromFirestore(key).then(loaded => {
-                                 if (!loaded) {
-                                     generateChunkData(cX, cZ);
-                                 }
-                             }));
-                        } else {
-                            // Si pas d'auth, générer directement
-                            generateChunkData(cX, cZ);
-                        }
-                    } else {
-                         // Créer le groupe s'il existe dans chunkData mais pas encore en mesh
-                        if (!chunkMeshes[key]) {
-                            chunkMeshes[key] = new THREE.Group();
-                            chunkMeshes[key].name = `Chunk-${key}`;
-                            scene.add(chunkMeshes[key]);
+                    if (distSq > R2) {
+                        continue; 
+                    }
+
+                    const key = `${cX},${cZ}`;
+                    requiredChunks.push({ key, distSq, cX, cZ });
+                }
+            }
+            
+            // Tri par distance (du plus proche au plus éloigné)
+            requiredChunks.sort((a, b) => a.distSq - b.distSq);
+            
+            // 2. Traiter les chunks triés pour le chargement de données ou le maillage
+            for (const chunk of requiredChunks) {
+                const key = chunk.key;
+                
+                if (!chunkData[key]) {
+                    // Les données du chunk sont manquantes -> Tenter de charger/générer (async)
+                    if (!currentlyLoadingChunks.has(key)) {
+                        currentlyLoadingChunks.add(key);
+                        checkAndLoadChunkData(chunk.cX, chunk.cZ, key);
+                    }
+                } else {
+                    // Les données sont présentes, mais le maillage est-il fait ou à jour ?
+                    const meshGroup = chunkMeshes[key];
+                    if (!meshGroup || meshGroup.children.length === 0) {
+                        // Ajouter à la file d'attente de maillage (si pas déjà dedans)
+                        if (!chunkGenerationQueue.includes(key)) {
+                            chunkGenerationQueue.push(key);
                         }
                     }
                 }
             }
-            
-            await Promise.all(loadPromises); // Attendre que tous les chargements/générations soient faits
 
-            // 2. Rendre (ou re-rendre) les chunks requis
-            chunksToRender.forEach(key => {
-                const meshGroup = chunkMeshes[key];
-                if (meshGroup && chunkData[key] && meshGroup.children.length === 0) {
-                     renderChunk(key);
-                }
-            });
-
-
-            // 3. Décharger les chunks qui sont TROP LOIN
+            // 3. Décharger les chunks qui sont TROP LOIN (logique d'unloading)
             for (const key in chunkData) {
-                if (!chunksToRender.has(key)) {
-                    // Si on décharge, on sauvegarde d'abord si modifié
+                if (!requiredChunks.some(c => c.key === key)) { 
                     if (modifiedChunks.has(key)) {
                         await saveChunkToFirestore(key);
                     }
@@ -1012,34 +1061,63 @@
                  initialSpawnSet = true;
             }
 
-            // 5. Mise à jour du maillage des chunks adjacents au changement de chunk
+            // 5. Mise à jour du maillage des chunks adjacents au changement de chunk (logique de bordure)
             if (playerChunkKey !== lastChunkKey) {
-                // CORRECTION DE L'ERREUR ICI : dz n'était pas défini en dehors de la boucle interne.
                 const [oldCX, oldCZ] = lastChunkKey.split(',').map(Number);
                 const keysToUpdate = new Set();
                 
-                // Ajouter les 9 chunks autour de la NOUVELLE position
+                // Ajouter les 9 chunks autour de la NOUVELLE position et de l'ancienne
                 for (let dx = -1; dx <= 1; dx++) {
                     for (let dz = -1; dz <= 1; dz++) {
                         keysToUpdate.add(`${pCX + dx},${pCZ + dz}`);
-                    }
-                }
-                
-                // Ajouter les 9 chunks autour de l'ANCIENNE position pour nettoyer les bordures
-                 for (let dx = -1; dx <= 1; dx++) {
-                    for (let dz = -1; dz <= 1; dz++) {
                         keysToUpdate.add(`${oldCX + dx},${oldCZ + dz}`);
                     }
                 }
                 
                 keysToUpdate.forEach(key => {
-                    if(chunkData[key]) {
-                        renderChunk(key);
+                    const [cX, cZ] = key.split(',').map(Number);
+                    const dx = cX - pCX;
+                    const dz = cZ - pCZ;
+                    if (dx * dx + dz * dz <= R2 && chunkData[key]) {
+                        // Ajouter ces chunks de bordure à la file d'attente pour être re-rendus rapidement
+                        if (!chunkGenerationQueue.includes(key)) {
+                            chunkGenerationQueue.push(key);
+                        }
                     }
                 });
                 
                 lastChunkKey = playerChunkKey;
             }
+        }
+
+        /**
+         * Traite les chunks en attente de maillage (rendering) par lots limités.
+         */
+        function processChunkQueue() {
+            if (chunkGenerationQueue.length === 0) return;
+
+            // Tri par distance (du plus proche au plus éloigné) pour assurer la priorité
+            const playerChunkKey = getCurrentPlayerChunkKey();
+            const [pCX, pCZ] = playerChunkKey.split(',').map(Number);
+
+            chunkGenerationQueue.sort((keyA, keyB) => {
+                const [cXA, cZA] = keyA.split(',').map(Number);
+                const [cXB, cZB] = keyB.split(',').map(Number);
+                
+                const distSqA = (cXA - pCX) ** 2 + (cZA - pCZ) ** 2;
+                const distSqB = (cXB - pCX) ** 2 + (cZB - pCZ) ** 2;
+                
+                return distSqA - distSqB;
+            });
+            
+            // Traiter un nombre limité de chunks
+            const chunksToRender = chunkGenerationQueue.splice(0, MAX_CHUNKS_PER_FRAME);
+            
+            chunksToRender.forEach(key => {
+                if (chunkData[key]) {
+                    renderChunk(key);
+                }
+            });
         }
 
 
@@ -1107,6 +1185,10 @@
             
             if (!chunk || !chunkGroup) return;
 
+            // Libère la mémoire des anciens maillages
+            chunkGroup.children.forEach(mesh => {
+                mesh.geometry.dispose();
+            });
             chunkGroup.clear();
 
             const tempFaceGeometries = { 'grass': [], 'dirt': [], 'rock': [], 'wood': [], 'leaves': [] };
@@ -1124,6 +1206,7 @@
 
             for (const type in tempFaceGeometries) {
                 if (tempFaceGeometries[type].length > 0) {
+                    // Utiliser BufferGeometryUtils pour fusionner les géométries
                     const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(tempFaceGeometries[type]);
                     mergedGeometry.computeVertexNormals(); 
 
@@ -1476,6 +1559,9 @@
                     chunkUpdateCounter = 0;
                 }
                 
+                // NOUVEAU: Traiter la file d'attente de maillage
+                processChunkQueue(); 
+
                 // Sauvegarde périodique
                 saveCounter++;
                 if (saveCounter >= SAVE_INTERVAL_FRAMES) {
@@ -1493,4 +1579,3 @@
     </script>
 </body>
 </html>
-
